@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 
 from app.models.auth_session import AuthSession
 from app.models.user import User
-from tests.conftest import ADMIN_CREDENTIALS, csrf_headers
+from tests.conftest import ADMIN_CREDENTIALS, ADMIN_LOGIN, csrf_headers
 
 
 def test_dashboard_uses_live_system_data(
@@ -56,7 +56,7 @@ def test_settings_update_applies_to_new_sessions(
     assert invalid.status_code == 422
 
     client.post("/api/auth/logout", headers=csrf_headers(client))
-    login = client.post("/api/auth/login", json=ADMIN_CREDENTIALS)
+    login = client.post("/api/auth/login", json=ADMIN_LOGIN)
     assert login.status_code == 200
     expires = datetime.fromisoformat(
         login.json()["expires_at"].replace("Z", "+00:00")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from app.schemas.common import StrictRequest
+
 
 class AppSettingsOut(BaseModel):
     session_lifetime_hours: int
@@ -14,5 +16,5 @@ class AppSettingsOut(BaseModel):
     setup_complete: bool
 
 
-class AppSettingsUpdate(BaseModel):
+class AppSettingsUpdate(StrictRequest):
     session_lifetime_hours: int = Field(ge=1, le=720)

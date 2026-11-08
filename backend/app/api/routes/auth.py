@@ -24,6 +24,7 @@ from app.services.auth import (
     authenticate,
     change_own_password,
     create_session,
+    get_session_by_token,
     revoke_other_sessions,
     revoke_session,
 )
@@ -67,6 +68,15 @@ def login(
 
     request.app.state.login_limiter.reset(rate_limit_key(request, "login"))
     user.touch_login()
+
+    # Rotate away from any session already presented with this request. This
+    # guarantees a login never reuses a pre-authentication token.
+    previous = request.cookies.get(settings.session_cookie_name)
+    if previous:
+        existing = get_session_by_token(db, previous)
+        if existing is not None:
+            db.delete(existing)
+
     auth_session, raw_token = create_session(db, user, settings, meta=meta)
     record_audit(
         db,

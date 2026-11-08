@@ -5,6 +5,12 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 
+class StrictRequest(BaseModel):
+    """Request body that rejects unknown fields instead of ignoring them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class MessageResponse(BaseModel):
     message: str
 

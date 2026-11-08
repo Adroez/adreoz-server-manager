@@ -29,6 +29,7 @@ Minecraft servers. This boundary is deliberate:
 │ FastAPI process                                             │
 │                                                             │
 │  SecurityHeadersMiddleware  → CSP, cache, framing policy    │
+│  TrustedHostMiddleware      → Host-header allowlist         │
 │  Routers                    → health/setup/auth/users/…     │
 │  Dependencies               → DB, auth, CSRF, RBAC, limits  │
 │  Services                   → auth, users, dashboard, audit │
@@ -42,7 +43,7 @@ Minecraft servers. This boundary is deliberate:
 | Path | Responsibility |
 | --- | --- |
 | `app/main.py` | App factory, lifespan, exception handlers, router and static mounts |
-| `app/core/config.py` | Pydantic settings, paths, database URI, safe defaults |
+| `app/core/config.py` | Pydantic settings, paths, database URI, trusted hosts, safe defaults |
 | `app/core/security.py` | scrypt hashing, token generation, password policy |
 | `app/core/rate_limit.py` | Thread-safe in-memory sliding-window limiter |
 | `app/core/clock.py` | Naive UTC storage helpers and UTC JSON serialization |
@@ -145,11 +146,13 @@ app_settings
 1. `POST /api/auth/login` is rate-limited per client IP.
 2. Unknown usernames still perform a dummy scrypt verification to reduce
    timing differences.
-3. On success, a random 32-byte token is generated. Only its SHA-256 digest is
-   stored, along with a random CSRF token and expiry.
-4. The cookie is `HttpOnly`, `SameSite=Lax`, path `/`, and `Secure` only when
+3. On success, any session already presented with the request is revoked, so a
+   pre-authentication token cannot survive login.
+4. A random 32-byte token is generated. Only its SHA-256 digest is stored, along
+   with a random CSRF token and expiry.
+5. The cookie is `HttpOnly`, `SameSite=Lax`, path `/`, and `Secure` only when
    configured.
-5. Every protected request resolves the cookie to a session, checks expiry and
+6. Every protected request resolves the cookie to a session, checks expiry and
    account state, and refreshes `last_seen_at` at most once per minute.
 
 ### Mutations
@@ -175,9 +178,12 @@ Failed authorization is audited or rejected before any business change.
 4. Start uvicorn with `server_header=False` and `date_header=False`.
 
 On application startup, the lifespan handler primes psutil, records the panel
-start time, verifies database reachability and schema presence, and purges
-expired sessions. It does not create tables implicitly; migrations remain the
-single schema authority.
+start time, verifies database reachability and schema presence, enforces
+owner-only data/database permissions, and purges expired sessions. It does not
+create tables implicitly; migrations remain the single schema authority.
+
+Requests whose `Host` header is outside `ASM_TRUSTED_HOSTS` are rejected by
+Starlette's `TrustedHostMiddleware` before routing.
 
 ## Testing strategy
 
@@ -186,7 +192,9 @@ single schema authority.
 - Migrations are exercised on a fresh database to catch drift between model
   metadata and Alembic revisions.
 - Security tests assert headers, CSRF rejection, RBAC denial, setup locking,
-  rate limiting, and password/session rotation.
+  rate limiting, password/session rotation, login-time token replacement,
+  trusted-host rejection, strict request bodies, owner-only permissions, and
+  secure-cookie/HSTS behavior.
 - Dashboard tests assert response shape and plausible live values; they do not
   assert exact CPU or memory numbers.
 - Frontend format helpers are unit-tested with Node's built-in test runner.

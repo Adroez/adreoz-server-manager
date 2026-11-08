@@ -20,7 +20,8 @@ sudo useradd --system --create-home --home-dir /opt/adreoz-server-manager \
   --shell /usr/sbin/nologin adreoz
 sudo -u adreoz git clone <your-repository> /opt/adreoz-server-manager
 sudo -u adreoz mkdir -p /opt/adreoz-server-manager/data/{servers,backups,logs}
-sudo chmod 750 /opt/adreoz-server-manager/data
+sudo chmod 700 /opt/adreoz-server-manager/data \
+  /opt/adreoz-server-manager/data/{servers,backups,logs}
 ```
 
 Avoid spaces in the deployment path; the example systemd unit assumes
@@ -34,8 +35,9 @@ sudo -u adreoz ./scripts/setup.sh
 ```
 
 `setup.sh` creates `.venv`, installs pinned runtime and test dependencies, and
-applies Alembic migrations to `data/asm.db`. If `uv` is installed it is used
-automatically; otherwise the script falls back to `venv` + `pip`.
+applies Alembic migrations to `data/asm.db`. It also enforces `0700` on the
+runtime directories and `0600` on the SQLite file. If `uv` is installed it is
+used automatically; otherwise the script falls back to `venv` + `pip`.
 
 ## 3. Configure the panel
 
@@ -53,13 +55,16 @@ ASM_PORT=8080
 ASM_ENVIRONMENT=production
 ASM_COOKIE_SECURE=true
 ASM_TRUST_PROXY_HEADERS=true
+ASM_TRUSTED_HOSTS=panel.example.com,127.0.0.1,localhost
 ASM_SESSION_LIFETIME_HOURS=24
 ASM_LOGIN_ATTEMPT_LIMIT=10
 ASM_LOGIN_ATTEMPT_WINDOW_SECONDS=300
 ```
 
 Only enable `ASM_TRUST_PROXY_HEADERS` when the proxy overwrites forwarded
-headers. Keep `ASM_ALLOW_ROOT=false`.
+headers. Keep `ASM_ALLOW_ROOT=false`. Add every hostname users type into the
+browser to `ASM_TRUSTED_HOSTS`; requests with any other `Host` header return
+`400`. Keep the loopback entries so local health checks still work.
 
 Start once in the foreground to confirm migrations and setup work:
 
@@ -146,6 +151,11 @@ server {
 Add a request-rate limit at the proxy as defence in depth. The application
 limiter is per process and complements, but does not replace, proxy limits.
 
+Both proxies must forward the original `Host` header (the nginx example uses
+`proxy_set_header Host $host`) and that hostname must appear in
+`ASM_TRUSTED_HOSTS`. A mismatch produces `400 Invalid host header` before the
+request reaches the panel.
+
 > WebSocket support is not required in Phase 1. Future console streaming will
 > need `proxy_set_header Upgrade $http_upgrade` and
 > `proxy_set_header Connection "upgrade"` (or Caddy's default upgrade
@@ -223,6 +233,8 @@ backup and a specific reason; Phase 1 ships one initial revision.
 | Cookies not sent over HTTPS | Set `ASM_COOKIE_SECURE=true` and confirm the proxy forwards HTTPS |
 | Login page loads but API fails | CSP blocks only external origins; verify `connect-src 'self'` was not altered and that the proxy does not rewrite paths |
 | Wrong client IP in audit | Configure proxy headers and set `ASM_TRUST_PROXY_HEADERS=true` only for a trusted proxy |
+| `400 Invalid host header` | Add the public hostname to `ASM_TRUSTED_HOSTS` and confirm the proxy forwards `Host` |
+| `data/asm.db` is world-readable | Run `setup.sh` or restart the panel; both enforce `0600` |
 
 ## 9. Operational checklist
 
@@ -231,7 +243,9 @@ backup and a specific reason; Phase 1 ships one initial revision.
 - [ ] TLS terminates at the proxy; `ASM_COOKIE_SECURE=true`.
 - [ ] `ASM_ENVIRONMENT=production` (API docs disabled).
 - [ ] `.env` is `0600` and not committed.
-- [ ] `data/` is `0750` and backed up.
+- [ ] `data/` and its subdirectories are `0700`; `data/asm.db` is `0600`.
+- [ ] `ASM_TRUSTED_HOSTS` includes the public hostname only.
+- [ ] `data/` is backed up.
 - [ ] Proxy rate limiting and, if possible, an IP allowlist/VPN are enabled.
 - [ ] `journalctl` and failed-login audit entries are reviewed.
 - [ ] Dependencies and the host are patched on a schedule.

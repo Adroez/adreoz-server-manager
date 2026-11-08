@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.models.auth_session import AuthSession
 from tests.conftest import (
     ADMIN_CREDENTIALS,
+    ADMIN_LOGIN,
     csrf_headers,
     csrf_token,
 )
@@ -189,3 +190,24 @@ def test_revoke_other_sessions(client: TestClient, admin_ready: dict, app) -> No
     assert second.get("/api/auth/me").status_code == 401
     assert client.get("/api/auth/me").status_code == 200
     second.close()
+
+
+def test_login_rotates_and_invalidates_the_presented_session(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    old_token = client.cookies.get("asm_session")
+    assert old_token
+
+    login = client.post("/api/auth/login", json=ADMIN_LOGIN)
+    assert login.status_code == 200
+
+    new_token = client.cookies.get("asm_session")
+    assert new_token
+    assert new_token != old_token
+
+    stale = TestClient(app)
+    stale.cookies.set("asm_session", old_token)
+    assert stale.get("/api/auth/me").status_code == 401
+    stale.close()
+
+    assert client.get("/api/auth/me").status_code == 200

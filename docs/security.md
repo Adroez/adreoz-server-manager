@@ -46,16 +46,25 @@ exposure.
 | Session expiry | Database `expires_at`, checked on every request |
 | Idle activity | `last_seen_at` refreshed at most once per minute |
 | Password change | Revokes all sessions, then issues a new session and CSRF token |
+| Login rotation | Revokes any session token already presented, then issues a fresh token |
 | Other sessions | Explicit "sign out other sessions" action |
 | Disabled accounts | Existing sessions deleted immediately on deactivation |
 
 ### Session rotation
+
+Logging in revokes any session token already presented with the request before
+issuing the new one, so a pre-authentication token can never survive a login.
 
 Changing your own password deletes every session for that user, then creates a
 fresh session for the current browser. Admin-initiated password resets revoke
 the target user's sessions. Role changes do not force rotation, but the next
 request reads the current role from the database, so a demotion takes effect
 immediately.
+
+The frontend only clears its local state after a successful logout or a `401`
+from the logout endpoint. If the request fails at the network layer or returns
+`403`/`5xx`, the server session may still be valid, so the UI stays signed in
+and reports the failure instead of implying the user is safe.
 
 ### Why not JWT?
 
@@ -100,6 +109,17 @@ browsers. The token check is the authoritative defence and does not rely on
 Login and setup are intentionally exempt from CSRF because no session exists
 yet. Both are rate-limited, and setup is only available once.
 
+## Request validation
+
+Request bodies use Pydantic models with `extra="forbid"` (via `StrictRequest`),
+so unknown fields such as an injected `role` or `is_active` are rejected with
+`422` instead of being silently ignored. Password, username, email, role, and
+session-lifetime values are validated in the schema and again in the service
+layer where a database invariant matters.
+
+All database access goes through the SQLAlchemy ORM with bound parameters; no
+request value is interpolated into SQL text.
+
 ## Rate limiting
 
 Login and setup share a thread-safe, in-memory sliding window keyed by
@@ -136,6 +156,8 @@ Cross-Origin-Resource-Policy: same-origin
 
 Additional behaviour:
 
+- Requests with a `Host` header outside `ASM_TRUSTED_HOSTS` are rejected with
+  `400 Invalid host header` before reaching the application routes.
 - `Strict-Transport-Security` is added when `ASM_COOKIE_SECURE=true`.
 - `/api/*` responses use `Cache-Control: no-store`.
 - HTML, JS, and CSS use `Cache-Control: no-cache`.
@@ -168,6 +190,11 @@ review.
 
 - The panel refuses to run as **root** unless `ASM_ALLOW_ROOT=true`.
 - The default bind address is `127.0.0.1`.
+- Runtime data directories are created and corrected to `0700`; a file-backed
+  SQLite database is restricted to `0600` at startup and by `scripts/setup.sh`.
+- `ASM_ENVIRONMENT=production` with `ASM_COOKIE_SECURE=false` logs a warning;
+  the default remains HTTP-friendly for a local install, but a public
+  deployment must enable secure cookies.
 - Database access uses SQLAlchemy parameter binding; there is no raw SQL string
   interpolation and no `shell=True`.
 - No Minecraft process is spawned in Phase 1, so command-injection surface is
@@ -183,10 +210,10 @@ review.
 2. Set `ASM_ENVIRONMENT=production`, `ASM_COOKIE_SECURE=true`, and
    `ASM_HOST=127.0.0.1`.
 3. Set `ASM_TRUST_PROXY_HEADERS=true` only if the proxy sanitizes forwarded
-   headers.
+   headers, and add the public hostname to `ASM_TRUSTED_HOSTS`.
 4. Add a proxy-level rate limit and, ideally, an IP allowlist or VPN.
-5. Back up the database and `.env` securely; restrict permissions to the
-   service user.
+5. Back up the database and `.env` securely; keep `data/` at `0700`, the
+   database at `0600`, and restrict ownership to the service user.
 6. Monitor failed-login audit rows and panel logs.
 7. Keep the host, Python runtime, and dependencies patched.
 

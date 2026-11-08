@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.routes import auth, dashboard, health, settings as settings_routes
 from app.api.routes import setup, users
@@ -34,6 +35,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     settings.ensure_directories()
 
+    if settings.environment == "production" and not settings.cookie_secure:
+        logger.warning(
+            "ASM_ENVIRONMENT=production but ASM_COOKIE_SECURE is disabled. "
+            "Set ASM_COOKIE_SECURE=true when serving the panel over HTTPS."
+        )
+
     engine = build_engine(settings)
     session_factory = build_session_factory(engine)
 
@@ -52,10 +59,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not database_is_reachable(engine):
             logger.error("Database is not reachable at %s", settings.database_uri)
         elif not inspect(engine).has_table("users"):
+            settings.secure_database_permissions()
             logger.error(
                 "Database schema is missing. Run 'alembic upgrade head' from backend/."
             )
         else:
+            settings.secure_database_permissions()
             db = session_factory()
             try:
                 purged = purge_expired_sessions(db)
@@ -87,6 +96,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.login_attempt_limit, settings.login_attempt_window_seconds
     )
 
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=settings.allowed_hosts,
+    )
     app.add_middleware(SecurityHeadersMiddleware, cookie_secure=settings.cookie_secure)
 
     @app.exception_handler(DomainError)

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
+from app.models.audit import AuditLog
+from app.models.auth_session import AuthSession
+from app.models.user import User
 from tests.conftest import (
-    ADMIN_CREDENTIALS,
+    ADMIN_LOGIN,
     PLAYER_PASSWORD,
     csrf_headers,
 )
@@ -241,3 +245,152 @@ def test_disabled_user_cannot_login(client: TestClient, admin_ready: dict) -> No
     )
     assert login.status_code == 401
     assert login.json()["detail"] == "Invalid username or password."
+
+
+def test_deactivation_revokes_sessions_and_reactivation_restores_login(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    player = _create_player(client)
+    player_client = TestClient(app)
+    login = player_client.post(
+        "/api/auth/login",
+        json={"username": "player", "password": PLAYER_PASSWORD},
+    )
+    assert login.status_code == 200
+    assert player_client.get("/api/auth/me").status_code == 200
+
+    disable = client.patch(
+        f"/api/users/{player['id']}",
+        headers=csrf_headers(client),
+        json={"is_active": False},
+    )
+    assert disable.status_code == 200
+    assert player_client.get("/api/auth/me").status_code == 401
+    assert (
+        player_client.post(
+            "/api/auth/login",
+            json={"username": "player", "password": PLAYER_PASSWORD},
+        ).status_code
+        == 401
+    )
+
+    enable = client.patch(
+        f"/api/users/{player['id']}",
+        headers=csrf_headers(client),
+        json={"is_active": True},
+    )
+    assert enable.status_code == 200
+    assert (
+        player_client.post(
+            "/api/auth/login",
+            json={"username": "player", "password": PLAYER_PASSWORD},
+        ).status_code
+        == 200
+    )
+    assert player_client.get("/api/auth/me").status_code == 200
+    player_client.close()
+
+
+def test_regular_user_cannot_modify_other_accounts(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    player = _create_player(client)
+    admin_id = admin_ready["user"]["id"]
+
+    client.post("/api/auth/logout", headers=csrf_headers(client))
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "player", "password": PLAYER_PASSWORD},
+    )
+    assert login.status_code == 200
+    headers = csrf_headers(client)
+
+    assert client.get(f"/api/users/{admin_id}").status_code == 403
+    assert (
+        client.patch(
+            f"/api/users/{admin_id}",
+            headers=headers,
+            json={"role": "user"},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.delete(f"/api/users/{admin_id}", headers=headers).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            f"/api/users/{admin_id}/password",
+            headers=headers,
+            json={"new_password": "HijackedPass123"},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/users",
+            headers=headers,
+            json={
+                "username": "escalation",
+                "password": "Escalation123",
+                "role": "admin",
+            },
+        ).status_code
+        == 403
+    )
+    assert client.get("/api/users").status_code == 403
+
+    with app.state.session_factory() as db:
+        admin = db.get(User, admin_id)
+        assert admin is not None
+        assert admin.role == "admin"
+        assert admin.is_active is True
+
+    admin_client = TestClient(app)
+    assert (
+        admin_client.post("/api/auth/login", json=ADMIN_LOGIN).status_code
+        == 200
+    )
+    admin_client.close()
+
+
+def test_delete_user_removes_sessions_and_keeps_audit_snapshot(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    player = _create_player(client)
+    player_client = TestClient(app)
+    assert (
+        player_client.post(
+            "/api/auth/login",
+            json={"username": "player", "password": PLAYER_PASSWORD},
+        ).status_code
+        == 200
+    )
+
+    delete = client.delete(
+        f"/api/users/{player['id']}", headers=csrf_headers(client)
+    )
+    assert delete.status_code == 200
+
+    with app.state.session_factory() as db:
+        assert db.get(User, player["id"]) is None
+        assert (
+            db.scalar(
+                select(func.count(AuthSession.id)).where(
+                    AuthSession.user_id == player["id"]
+                )
+            )
+            == 0
+        )
+        login_audit = db.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "auth.login_succeeded",
+                AuditLog.actor_username == "player",
+            )
+            .order_by(AuditLog.id.desc())
+        )
+        assert login_audit is not None
+        assert login_audit.actor_user_id is None
+
+    player_client.close()

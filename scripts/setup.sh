@@ -19,6 +19,10 @@ if ! command -v "$PYTHON" >/dev/null 2>&1; then
 fi
 
 mkdir -p data/servers data/backups data/logs
+chmod 700 data data/servers data/backups data/logs
+if [[ -f data/asm.db ]]; then
+  chmod 600 data/asm.db
+fi
 
 if [[ ! -x .venv/bin/python ]]; then
   if command -v uv >/dev/null 2>&1; then
@@ -44,6 +48,9 @@ echo "Applying database migrations…"
   cd backend
   "$ROOT/.venv/bin/python" -m alembic upgrade head
 )
+if [[ -f data/asm.db ]]; then
+  chmod 600 data/asm.db
+fi
 
 cat <<'EOF'
 

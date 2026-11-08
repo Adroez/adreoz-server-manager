@@ -155,15 +155,22 @@ async function handleLogout() {
   try {
     await api("/auth/logout", { method: "POST", handleUnauthorized: false });
   } catch (error) {
-    // The local session is cleared regardless; the server token is expired or
-    // the request failed, and the user expects to leave the panel.
-    console.warn("Logout request failed", error);
+    // A failed request does not invalidate the server-side session. Keep the
+    // current UI signed in rather than pretending the browser is safe.
+    if (error.status !== 401) {
+      toast(
+        error.message || "Sign out failed. Your session is still active; try again.",
+        "error"
+      );
+      return;
+    }
   } finally {
-    clearSession();
-    resetShell({ clearHash: true });
-    showLogin({ message: "You have been signed out." });
     logoutInFlight = false;
   }
+
+  clearSession();
+  resetShell({ clearHash: true });
+  showLogin({ message: "You have been signed out." });
 }
 
 async function renderRoute() {

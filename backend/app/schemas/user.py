@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, mo
 
 from app.core.clock import UtcDateTime
 from app.core.roles import Role
+from app.schemas.common import StrictRequest
 
 
 class UserOut(BaseModel):
@@ -22,7 +23,7 @@ class UserOut(BaseModel):
     last_login_at: UtcDateTime | None
 
 
-class UserCreateRequest(BaseModel):
+class UserCreateRequest(StrictRequest):
     username: str = Field(min_length=3, max_length=32)
     email: EmailStr | None = None
     password: str = Field(min_length=1, max_length=128)
@@ -34,7 +35,7 @@ class UserCreateRequest(BaseModel):
         return value.strip()
 
 
-class UserUpdateRequest(BaseModel):
+class UserUpdateRequest(StrictRequest):
     role: Role | None = None
     is_active: bool | None = None
 
@@ -45,7 +46,7 @@ class UserUpdateRequest(BaseModel):
         return self
 
 
-class ResetPasswordRequest(BaseModel):
+class ResetPasswordRequest(StrictRequest):
     new_password: str = Field(min_length=1, max_length=128)
 
 

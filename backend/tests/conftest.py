@@ -18,6 +18,10 @@ ADMIN_CREDENTIALS = {
     "email": "owner@example.com",
     "password": "AdreozPass123",
 }
+ADMIN_LOGIN = {
+    "username": ADMIN_CREDENTIALS["username"],
+    "password": ADMIN_CREDENTIALS["password"],
+}
 PLAYER_PASSWORD = "PlayerPass123"
 
 
@@ -29,6 +33,7 @@ def settings(tmp_path: Path) -> Settings:
         data_dir=tmp_path / "data",
         frontend_dir=PROJECT_ROOT / "frontend",
         database_url=f"sqlite:///{tmp_path / 'asm-test.db'}",
+        trusted_hosts="127.0.0.1,localhost,[::1],testserver",
         login_attempt_limit=5,
         login_attempt_window_seconds=60,
     )

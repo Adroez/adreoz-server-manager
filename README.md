@@ -20,7 +20,8 @@ the next milestone instead of showing fake servers or metrics.
 - **First-run setup** — creates the initial administrator, then permanently
   closes the setup endpoint.
 - **Authentication** — scrypt password hashing, opaque server-side sessions,
-  HttpOnly cookies, CSRF protection, login rate limiting, and an audit trail.
+  HttpOnly cookies, CSRF protection, host-header allowlisting, login rate
+  limiting, session rotation on login, and an audit trail.
 - **Role-based access control** — `admin` and `user` roles, enforced in the
   backend on every protected route. Hiding a button is never the only defence.
 - **User management** — list, search, create, edit roles, disable accounts,
@@ -98,12 +99,18 @@ All defaults are loopback-only and safe for a local install.
 | `ASM_LOGIN_ATTEMPT_LIMIT` | `10` | Attempts per window |
 | `ASM_LOGIN_ATTEMPT_WINDOW_SECONDS` | `300` | Rate-limit window |
 | `ASM_TRUST_PROXY_HEADERS` | `false` | Trust proxy IP headers |
+| `ASM_TRUSTED_HOSTS` | `127.0.0.1,localhost,[::1]` | Allowed `Host` headers |
 | `ASM_ALLOW_ROOT` | `false` | Refuse root by default |
 | `ASM_LOG_LEVEL` | `info` | Uvicorn log level |
 
 The administrator can change the *effective* session lifetime from
 **Settings**; it is stored in the database and applies to sessions created
 afterwards.
+
+`ASM_TRUSTED_HOSTS` is a comma-separated allowlist. A request whose `Host`
+header is not on the list is rejected with `400 Invalid host header`; add the
+public hostname when running behind a reverse proxy. Runtime data directories
+are created `0700`, and a file-backed SQLite database is restricted to `0600`.
 
 ## Project layout
 
@@ -176,27 +183,34 @@ node --test frontend/js/tests/format.test.mjs
 
 Current results for this phase:
 
-- Backend: **28 passed, 1 warning** (Starlette's upstream `httpx2` deprecation).
+- Backend: **36 passed, 1 warning** (Starlette's upstream `httpx2` deprecation).
 - Frontend: **8 passed, 0 failed**.
 
-The backend suite covers setup locking, login/logout, CSRF enforcement, RBAC,
-rate limiting, password change and session rotation, last-admin and self
-protections, audit logging, security headers, migrations, and live dashboard
-metrics. The frontend suite covers formatting helpers used across views.
+The backend suite covers setup locking, login/logout, login session rotation,
+CSRF enforcement, RBAC, cross-user denial, rate limiting, password change and
+session rotation, deactivation and reactivation, last-admin and self
+protections, delete cascades, audit logging, security headers, trusted-host
+rejection, strict request bodies, owner-only file permissions, secure
+cookies/HSTS, migrations, and live dashboard metrics. The frontend suite covers
+formatting helpers used across views.
 
 ## Security posture
 
 - Passwords are hashed with stdlib `hashlib.scrypt`; parameters are stored in
   the hash string so they can be increased later.
 - Only SHA-256 digests of session tokens are stored. Cookies are `HttpOnly`,
-  `SameSite=Lax`, and path-scoped.
+  `SameSite=Lax`, and path-scoped. Logging in revokes any session token already
+  presented by the browser before issuing a new one.
 - Every state-changing API call requires the per-session CSRF token.
 - Login and setup are rate-limited per client IP.
+- Request bodies reject unknown fields instead of silently ignoring them.
+- A `Host` allowlist blocks DNS-rebinding and unexpected virtual hosts.
 - Security headers include a strict CSP with no inline script/style,
   `frame-ancestors 'none'`, and `nosniff`; HSTS is added when cookies are
   marked `Secure`.
 - Errors are normalized so passwords and raw inputs never appear in responses.
-- The server binds to loopback and refuses to run as root by default.
+- The server binds to loopback and refuses to run as root by default. Runtime
+  data directories are owner-only (`0700`) and the SQLite file is `0600`.
 
 See [docs/security.md](docs/security.md) for the full model and its known
 limitations.

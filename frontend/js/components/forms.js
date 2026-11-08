@@ -134,10 +134,16 @@ export function generatePassword(length = 20) {
   const digits = "23456789";
   const symbols = "!@#$%*-_+=";
   const all = `${letters}${digits}${symbols}`;
+  const buffer = new Uint32Array(1);
   const randomIndex = (size) => {
-    const buffer = new Uint32Array(1);
-    crypto.getRandomValues(buffer);
-    return buffer[0] % size;
+    // Rejection sampling avoids modulo bias in generated credentials.
+    const limit = Math.floor(0x100000000 / size) * size;
+    let value = 0;
+    do {
+      crypto.getRandomValues(buffer);
+      value = buffer[0];
+    } while (value >= limit);
+    return value % size;
   };
   const chars = [letters[randomIndex(letters.length)], digits[randomIndex(digits.length)]];
   while (chars.length < length) {

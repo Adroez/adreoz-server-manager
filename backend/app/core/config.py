@@ -17,6 +17,7 @@ from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -52,7 +53,15 @@ class Settings(BaseSettings):
     login_attempt_window_seconds: int = Field(default=300, ge=10, le=86400)
 
     trust_proxy_headers: bool = False
+    # Comma-separated Host header allowlist. Reverse-proxy deployments must add
+    # their public hostname here.
+    trusted_hosts: str = "127.0.0.1,localhost,[::1]"
     allow_root: bool = False
+
+    @property
+    def allowed_hosts(self) -> list[str]:
+        hosts = [host.strip() for host in self.trusted_hosts.split(",") if host.strip()]
+        return hosts or ["127.0.0.1", "localhost"]
 
     @property
     def database_uri(self) -> str:
@@ -73,13 +82,32 @@ class Settings(BaseSettings):
         return self.data_dir / "logs"
 
     def ensure_directories(self) -> None:
+        """Create the runtime directories with owner-only permissions.
+
+        The data directory contains password hashes, session digests, and the
+        audit trail, so it must not be readable by other local users.
+        """
+
         for directory in (
             self.data_dir,
             self.servers_dir,
             self.backups_dir,
             self.logs_dir,
         ):
-            directory.mkdir(parents=True, exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            directory.chmod(0o700)
+
+    def secure_database_permissions(self) -> None:
+        """Restrict a file-based SQLite database to the service user."""
+
+        if not self.database_uri.startswith("sqlite"):
+            return
+        database = make_url(self.database_uri).database
+        if not database or database == ":memory:":
+            return
+        path = Path(database)
+        if path.is_file():
+            path.chmod(0o600)
 
 
 @lru_cache(maxsize=1)

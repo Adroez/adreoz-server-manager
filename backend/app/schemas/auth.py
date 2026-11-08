@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.core.clock import UtcDateTime
+from app.schemas.common import StrictRequest
 from app.schemas.user import UserOut
 
 
@@ -14,7 +15,7 @@ class SetupStatus(BaseModel):
     version: str
 
 
-class SetupRequest(BaseModel):
+class SetupRequest(StrictRequest):
     username: str = Field(min_length=3, max_length=32)
     email: EmailStr | None = None
     password: str = Field(min_length=1, max_length=128)
@@ -25,7 +26,7 @@ class SetupRequest(BaseModel):
         return value.strip()
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(StrictRequest):
     username: str = Field(min_length=1, max_length=32)
     password: str = Field(min_length=1, max_length=128)
 
@@ -41,6 +42,6 @@ class AuthResponse(BaseModel):
     expires_at: UtcDateTime
 
 
-class ChangePasswordRequest(BaseModel):
+class ChangePasswordRequest(StrictRequest):
     current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=1, max_length=128)
