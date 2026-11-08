@@ -1,0 +1,47 @@
+# Adreoz Server Manager — example systemd service.
+#
+# Install as root:
+#   cp deploy/adreoz-server-manager.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now adreoz-server-manager
+#
+# Adjust User, Group, WorkingDirectory, and paths for your install. The panel
+# intentionally refuses to run as root.
+
+[Unit]
+Description=Adreoz Server Manager
+Documentation=file:///opt/adreoz-server-manager/docs/deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=adreoz
+Group=adreoz
+WorkingDirectory=/opt/adreoz-server-manager/backend
+EnvironmentFile=-/opt/adreoz-server-manager/.env
+ExecStart=/opt/adreoz-server-manager/.venv/bin/python -m app
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+# Runtime hardening. The panel only needs to write its own data directory.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/adreoz-server-manager/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# If Minecraft servers will be launched from this service in a later phase,
+# those paths also need to be writable and the hardening profile reviewed.
+
+[Install]
+WantedBy=multi-user.target

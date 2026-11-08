@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="Adreoz Server Manager — a local-first Minecraft server hosting control panel."
+    />
+    <title>Adreoz Server Manager</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/logo.svg" />
+    <link rel="stylesheet" href="/css/tokens.css" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/components.css" />
+    <link rel="stylesheet" href="/css/layout.css" />
+    <link rel="stylesheet" href="/css/views.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div class="boot-screen" role="status" aria-live="polite">
+        <img class="boot-logo" src="/assets/logo.svg" alt="" width="64" height="64" />
+        <p class="boot-title">Adreoz Server Manager</p>
+        <p class="boot-subtitle">Preparing the control panel…</p>
+        <span class="spinner" aria-hidden="true"></span>
+      </div>
+    </div>
+    <div id="toast-stack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+    <noscript>
+      <div class="noscript">Adreoz Server Manager requires JavaScript to run.</div>
+    </noscript>
+    <script type="module" src="/js/main.js"></script>
+  </body>
+</html>

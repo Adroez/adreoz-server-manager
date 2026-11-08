@@ -1,0 +1,52 @@
+/* Design tokens for Adreoz Server Manager. */
+:root {
+  color-scheme: dark;
+
+  --bg: #07050c;
+  --bg-raised: #0c0814;
+  --surface: #120d1d;
+  --surface-2: #181125;
+  --surface-3: #211732;
+  --border: rgba(196, 181, 253, 0.11);
+  --border-strong: rgba(196, 181, 253, 0.22);
+
+  --text: #f5f1fc;
+  --text-muted: #a79cbe;
+  --text-dim: #786e8e;
+
+  --violet: #8b5cf6;
+  --violet-deep: #6d28d9;
+  --violet-bright: #a78bfa;
+  --lavender: #c4b5fd;
+  --pink: #e879f9;
+  --pink-soft: #f0abfc;
+  --green: #34d399;
+  --green-soft: #a7f3d0;
+  --amber: #fbbf24;
+  --red: #fb7185;
+  --red-soft: #fda4af;
+
+  --gradient-primary: linear-gradient(135deg, #7c3aed 0%, #a855f7 50%, #e879f9 100%);
+  --gradient-text: linear-gradient(120deg, #ddd6fe 0%, #c4b5fd 40%, #f0abfc 100%);
+  --gradient-surface: linear-gradient(160deg, rgba(35, 25, 53, 0.92) 0%, rgba(15, 11, 24, 0.94) 100%);
+  --glow-violet: rgba(139, 92, 246, 0.28);
+
+  --font-sans: "Inter", "Inter Variable", "SF Pro Display", system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+
+  --radius-xl: 24px;
+  --radius-lg: 18px;
+  --radius-md: 13px;
+  --radius-sm: 9px;
+
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 24px 60px -40px rgba(0, 0, 0, 0.9);
+  --shadow-pop: 0 30px 90px -30px rgba(0, 0, 0, 0.85);
+  --shadow-glow: 0 16px 50px -20px var(--glow-violet);
+
+  --sidebar-width: 272px;
+  --topbar-height: 84px;
+  --content-max: 1440px;
+  --tr: 180ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}

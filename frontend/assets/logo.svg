@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Adreoz Server Manager">
+  <defs>
+    <linearGradient id="asmGradient" x1="10" y1="8" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8B5CF6"/>
+      <stop offset="0.55" stop-color="#C084FC"/>
+      <stop offset="1" stop-color="#F0ABFC"/>
+    </linearGradient>
+    <radialGradient id="asmGlow" cx="0" cy="0" r="1" gradientTransform="translate(32 22) rotate(90) scale(42)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A855F7" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#A855F7" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="#120D1D"/>
+  <rect width="64" height="64" rx="16" fill="url(#asmGlow)"/>
+  <path d="M32 8.5 52 20v24L32 55.5 12 44V20L32 8.5Z" fill="none" stroke="url(#asmGradient)" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="M22.5 43 32 20.5 41.5 43" fill="none" stroke="url(#asmGradient)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26.8 34.6h10.4" stroke="url(#asmGradient)" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="32" cy="49.5" r="1.8" fill="#F0ABFC"/>
+</svg>

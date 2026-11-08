@@ -1,0 +1,40 @@
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# --- Application data -----------------------------------------------------
+# Never commit the live database, server files, backups, or logs.
+data/*
+!data/.gitkeep
+!data/servers/
+!data/backups/
+!data/logs/
+data/servers/*
+!data/servers/.gitkeep
+data/backups/*
+!data/backups/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+
+# --- Local configuration --------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Editors / OS ---------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# --- Node (frontend tests only) ------------------------------------------
+node_modules/
+npm-debug.log*
