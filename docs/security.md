@@ -120,6 +120,26 @@ layer where a database invariant matters.
 All database access goes through the SQLAlchemy ORM with bound parameters; no
 request value is interpolated into SQL text.
 
+## Multi-server security
+
+- Every server record carries an `owner_id` foreign key to `users.id`.
+- `GET /api/servers` returns only the caller's servers unless the caller is
+  an administrator, who sees all servers.
+- `GET/PATCH/DELETE/start/stop/restart /api/servers/{id}` require the caller
+  to be the server owner or an administrator; otherwise `403`.
+- Server directories are created under `data/servers/` with `0700`
+  permissions; `server.properties` is written with `0600`.
+- Server names are validated against a safe pattern and checked for
+  uniqueness (case-insensitive) to prevent path and identifier collisions.
+- Server ports are validated (1024–65535) and checked for uniqueness across
+  all servers.
+- No `shell=True` is ever used; the Java executable and arguments are passed
+  as a list to `asyncio.create_subprocess_exec`.
+- Arbitrary executable commands are never accepted from API parameters.
+- Server software JAR files are not downloaded or installed by the panel;
+  the operator must place `server.jar` in the server directory before
+  starting.
+
 ## Rate limiting
 
 Login and setup share a thread-safe, in-memory sliding window keyed by

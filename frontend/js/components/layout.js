@@ -47,11 +47,11 @@ export function renderShell({ root, routes, user, onLogout }) {
       "div",
       { class: "roadmap-title" },
       document.createTextNode("Phase 2"),
-      el("span", { class: "badge badge-phase", text: "Next" })
+      el("span", { class: "badge badge-phase", text: "Live" })
     ),
     el("p", {
       class: "roadmap-copy",
-      text: "Server lifecycle is next: install software, launch isolated servers, and stream live status.",
+      text: "Server lifecycle is live: create, configure, start, and stop Minecraft servers.",
     })
   );
 

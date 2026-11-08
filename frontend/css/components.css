@@ -330,6 +330,12 @@
   gap: 11px;
 }
 
+.cell-server {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
 .cell-user-name {
   font-weight: 600;
   letter-spacing: -0.01em;

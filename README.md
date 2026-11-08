@@ -4,14 +4,13 @@ A local-first, multi-user control panel for hosting Minecraft servers. Built to
 run on a single machine you control, with a FastAPI backend, SQLite storage, and
 a dependency-free vanilla JavaScript frontend.
 
-**Phase 1 — Foundation** is complete. It delivers a real, working control panel
-for identity, access, and operational visibility. Minecraft server lifecycle
-management is intentionally *not* part of this phase; the dashboard labels it as
-the next milestone instead of showing fake servers or metrics.
+**Phase 1 — Foundation** is complete: identity, access, and operational visibility.
+**Phase 2 — Server Lifecycle** is complete: create, configure, start, and stop
+Minecraft servers with per-user ownership.
 
 ![Adreoz Server Manager dashboard](docs/images/dashboard.webp)
 
-![Status](https://img.shields.io/badge/phase-1%20foundation-8b5cf6)
+![Status](https://img.shields.io/badge/phase-2%20server%20lifecycle-8b5cf6)
 
 ---
 
@@ -33,6 +32,10 @@ the next milestone instead of showing fake servers or metrics.
   posture, admin only.
 - **Account security** — change your own password, rotate the session, and
   revoke all other sessions.
+- **Server lifecycle** — create, configure, start, stop, and delete Minecraft
+  servers (vanilla, Paper, Fabric, Forge). Per-user ownership enforced on every
+  endpoint. Server status, configuration, and process output tracked in the
+  database.
 - **Premium dark UI** — lavender/purple design system, responsive layout,
   accessible components, modals, toasts, and inline validation.
 
@@ -163,6 +166,15 @@ endpoints require both an authenticated session cookie **and** the
 | `POST` | `/api/users/{id}/password` | Admin + CSRF | Reset password |
 | `GET` | `/api/settings` | Admin | Read panel settings |
 | `PATCH` | `/api/settings` | Admin + CSRF | Update session lifetime |
+| `GET` | `/api/servers` | Session | List servers (owned or all if admin) |
+| `POST` | `/api/servers` | Session + CSRF | Create a Minecraft server |
+| `GET` | `/api/servers/{id}` | Session | Server details (owner or admin) |
+| `PATCH` | `/api/servers/{id}` | Session + CSRF | Update server config (stopped only) |
+| `DELETE` | `/api/servers/{id}` | Session + CSRF | Delete server (stopped only) |
+| `POST` | `/api/servers/{id}/start` | Session + CSRF | Start server process |
+| `POST` | `/api/servers/{id}/stop` | Session + CSRF | Stop server process |
+| `POST` | `/api/servers/{id}/restart` | Session + CSRF | Restart server process |
+| `GET` | `/api/servers/{id}/logs` | Session | Server process output |
 
 In `development`, interactive docs are available at `/docs`. In `production`
 they are disabled.
@@ -183,7 +195,7 @@ node --test frontend/js/tests/format.test.mjs
 
 Current results for this phase:
 
-- Backend: **36 passed, 1 warning** (Starlette's upstream `httpx2` deprecation).
+- Backend: **49 passed, 1 warning** (36 Phase 1 + 13 Phase 2 server lifecycle).
 - Frontend: **8 passed, 0 failed**.
 
 The backend suite covers setup locking, login/logout, login session rotation,
@@ -191,8 +203,9 @@ CSRF enforcement, RBAC, cross-user denial, rate limiting, password change and
 session rotation, deactivation and reactivation, last-admin and self
 protections, delete cascades, audit logging, security headers, trusted-host
 rejection, strict request bodies, owner-only file permissions, secure
-cookies/HSTS, migrations, and live dashboard metrics. The frontend suite covers
-formatting helpers used across views.
+cookies/HSTS, server CRUD, server ownership, server lifecycle, migrations, and
+live dashboard metrics. The frontend suite covers formatting helpers used across
+views.
 
 ## Security posture
 
@@ -226,8 +239,8 @@ limitations.
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1 | Foundation: auth, RBAC, users, dashboard, settings | **Complete** |
-| 2 | Server lifecycle: create, import, start/stop, console | Next |
-| 3 | Files and configuration management | Planned |
+| 2 | Server lifecycle: create, configure, start, stop | **Complete** |
+| 3 | Console & files: WebSocket console, file manager | Next |
 | 4 | Backups, schedules, and restore | Planned |
 | 5 | Java/runtime management and version pinning | Planned |
 | 6 | Per-server permissions and collaboration | Planned |

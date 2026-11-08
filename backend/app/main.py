@@ -15,10 +15,11 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.api.routes import auth, dashboard, health, settings as settings_routes
-from app.api.routes import setup, users
+from app.api.routes import auth, dashboard, health, servers, setup, users
+from app.api.routes import settings as settings_routes
 from app.core.config import Settings, get_settings
 from app.core.rate_limit import SlidingWindowLimiter
+from app.core.process import ProcessManager
 from app.database.session import (
     build_engine,
     build_session_factory,
@@ -77,6 +78,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 db.close()
 
         yield
+        # Gracefully stop all server processes on shutdown.
+        try:
+            await app.state.process_manager.stop_all(timeout=15)
+        except Exception:  # pragma: no cover - shutdown resilience
+            logger.exception("Failed to stop server processes during shutdown.")
         engine.dispose()
 
     app = FastAPI(
@@ -95,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.login_limiter = SlidingWindowLimiter(
         settings.login_attempt_limit, settings.login_attempt_window_seconds
     )
+    app.state.process_manager = ProcessManager()
 
     app.add_middleware(
         TrustedHostMiddleware,
@@ -145,6 +152,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(dashboard.router, prefix=api_prefix)
     app.include_router(users.router, prefix=api_prefix)
     app.include_router(settings_routes.router, prefix=api_prefix)
+    app.include_router(servers.router, prefix=api_prefix)
 
     if settings.frontend_dir.is_dir():
         app.mount(

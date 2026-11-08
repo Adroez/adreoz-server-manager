@@ -77,7 +77,7 @@ export function authShell({
         document.createTextNode("Local node")
       ),
       el("span", {
-        text: `${state.version ? `v${state.version} · ` : ""}Phase 1 foundation`,
+        text: `${state.version ? `v${state.version} · ` : ""}Phase 2 server lifecycle`,
       })
     )
   );

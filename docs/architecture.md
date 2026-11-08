@@ -8,13 +8,14 @@ required for Phase 1.
 ## Goals and boundaries
 
 Phase 1 provides the **control plane foundation**: identity, authorization,
-host visibility, and administration. It does **not** create, start, or stop
-Minecraft servers. This boundary is deliberate:
+host visibility, and administration. Phase 2 adds **server lifecycle**:
+create, configure, start, and stop Minecraft servers with per-user ownership.
 
-- No server records exist yet, so the UI never renders fake server counts.
+- Phase 1 never renders fake server counts.
+- Phase 2 provisions real server directories and manages real processes;
+  status is never simulated.
 - The dashboard reports only values it can actually read (host metrics,
-  database counts, audit rows, session metadata).
-- Future sections appear as a written roadmap, not as disabled mock controls.
+  database counts, audit rows, session metadata, server status).
 
 ## Component overview
 
@@ -30,11 +31,12 @@ Minecraft servers. This boundary is deliberate:
 │                                                             │
 │  SecurityHeadersMiddleware  → CSP, cache, framing policy    │
 │  TrustedHostMiddleware      → Host-header allowlist         │
-│  Routers                    → health/setup/auth/users/…     │
+│  Routers                    → health/setup/auth/users/servers/… │
 │  Dependencies               → DB, auth, CSRF, RBAC, limits  │
-│  Services                   → auth, users, dashboard, audit │
+│  Services                   → auth, users, dashboard, servers │
 │  SQLAlchemy sessions        → SQLite                        │
 │  StaticFiles                → frontend/ at "/"              │
+│  ProcessManager             → async server subprocesses     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -44,6 +46,7 @@ Minecraft servers. This boundary is deliberate:
 | --- | --- |
 | `app/main.py` | App factory, lifespan, exception handlers, router and static mounts |
 | `app/core/config.py` | Pydantic settings, paths, database URI, trusted hosts, safe defaults |
+| `app/core/process.py` | Async server subprocess management (no `shell=True`) |
 | `app/core/security.py` | scrypt hashing, token generation, password policy |
 | `app/core/rate_limit.py` | Thread-safe in-memory sliding-window limiter |
 | `app/core/clock.py` | Naive UTC storage helpers and UTC JSON serialization |
@@ -53,7 +56,9 @@ Minecraft servers. This boundary is deliberate:
 | `app/schemas/` | Pydantic request/response contracts |
 | `app/api/deps.py` | `get_db`, session authentication, CSRF, admin guards, IP rate limits |
 | `app/api/routes/` | HTTP endpoints grouped by concern |
+| `app/api/routes/servers.py` | Server CRUD, lifecycle, logs |
 | `app/services/` | Transactional business logic and audit recording |
+| `app/services/servers.py` | Server CRUD, ownership, lifecycle, process management |
 | `app/middleware/security.py` | Response headers and cache policy |
 
 ### Frontend modules
@@ -65,7 +70,10 @@ Minecraft servers. This boundary is deliberate:
 | `frontend/js/core/store.js` | In-memory session state (no tokens in `localStorage`) |
 | `frontend/js/core/dom.js` | Small DOM builder and event helper |
 | `frontend/js/components/` | Layout, auth layout, forms, modal, toast, icons, brand |
-| `frontend/js/views/` | Setup, login, dashboard, users, settings, account, 404 |
+| `frontend/js/views/servers.js` | Server list page |
+| `frontend/js/views/server-create.js` | Create server form |
+| `frontend/js/views/server-detail.js` | Server details and controls |
+| `frontend/js/views/` | Setup, login, dashboard, users, settings, account, servers, 404 |
 | `frontend/css/` | Design tokens, base styles, components, layout, view styles |
 
 The frontend is a hash-routed SPA. It reuses one application shell per signed-in
@@ -113,6 +121,35 @@ app_settings
   key         text PK
   value       text
   updated_at  datetime
+
+servers
+  id            integer PK
+  owner_id      integer FK users.id ON DELETE CASCADE
+  unique_id     text UNIQUE (UUID v4)
+  name          text UNIQUE (display form)
+  software_type text (vanilla | paper | fabric | forge)
+  version       text
+  directory     text (absolute path, inside data/servers/)
+  port          integer
+  max_players   integer
+  online_mode   boolean
+  difficulty    text (peaceful | easy | normal | hard)
+  gamemode      text (survival | creative | adventure | spectator)
+  view_distance integer
+  motd          text
+  status        text (stopped | starting | running | stopping | error)
+  process_id    integer nullable
+  created_at    datetime
+  updated_at    datetime
+  started_at    datetime nullable
+  stopped_at    datetime nullable
+
+server_logs
+  id        integer PK
+  server_id integer FK servers.id ON DELETE CASCADE
+  stream    text (stdout | stderr)
+  line      text
+  created_at datetime
 ```
 
 ### Why these shapes
@@ -155,11 +192,42 @@ app_settings
 6. Every protected request resolves the cookie to a session, checks expiry and
    account state, and refreshes `last_seen_at` at most once per minute.
 
-### Mutations
+### Server lifecycle
 
-Every `POST`, `PATCH`, and `DELETE` under `/api` requires `X-CSRF-Token` to
-match the session's token. Admin routes additionally require `role=admin`.
-Failed authorization is audited or rejected before any business change.
+1. `POST /api/servers` creates a server record, initializes its directory
+   under `data/servers/<name>/`, and writes `server.properties` + `eula.txt`.
+   Ownership is recorded as `owner_id = actor.id`.
+2. `POST /api/servers/{id}/start` launches `java -jar server.jar nogui` as an
+   asyncio subprocess. Output is captured line-by-line into `server_logs`.
+   Only `java` and its arguments are passed — never `shell=True`.
+3. `POST /api/servers/{id}/stop` sends SIGTERM, then SIGKILL after a timeout.
+4. `POST /api/servers/{id}/restart` stops then starts.
+5. `DELETE /api/servers/{id}` removes the server record and its directory
+   (only when stopped).
+6. `GET /api/servers/{id}/logs` returns captured output lines.
+7. Every endpoint enforces ownership: normal users see only their own servers;
+   admins see all.
+
+### Lifecycle state machine
+
+```
+stopped ──start──> starting ──java running──> running
+  ▲                  │                          │
+  │                  │ process exited (0)       │ process exited (!=0)
+  │                  ▼                          ▼
+  └───────────────── stopped ◄───────────────── error
+                         ▲
+                         │ stop (SIGTERM→SIGKILL)
+                         └──────────────────── stopping
+```
+
+Ownership and admin rules:
+
+- `POST /api/servers` — any authenticated user can create; owner is set to caller.
+- `GET /api/servers` — users see their own; admins see all.
+- `GET/PATCH/DELETE/start/stop/restart /api/servers/{id}` — owner or admin only.
+- Configuration changes (`PATCH`) require `status = stopped`.
+- Deletion (`DELETE`) requires `status = stopped`.
 
 ### Errors
 
@@ -195,6 +263,8 @@ Starlette's `TrustedHostMiddleware` before routing.
   rate limiting, password/session rotation, login-time token replacement,
   trusted-host rejection, strict request bodies, owner-only permissions, and
   secure-cookie/HSTS behavior.
+- Server tests assert CRUD, ownership enforcement, unauthorized access, invalid
+  configuration, lifecycle state transitions, and process failure handling.
 - Dashboard tests assert response shape and plausible live values; they do not
   assert exact CPU or memory numbers.
 - Frontend format helpers are unit-tested with Node's built-in test runner.

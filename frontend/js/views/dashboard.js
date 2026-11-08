@@ -508,14 +508,14 @@ export async function renderDashboard(view, ctx) {
             phaseCard({
               index: 2,
               title: "Server lifecycle",
-              description: "Install software, isolate directories, start and stop.",
-              state: "next",
+              description: "Create, configure, start, and stop Minecraft servers.",
+              state: "done",
             }),
             phaseCard({
               index: 3,
               title: "Console & files",
               description: "WebSocket console and traversal-safe file manager.",
-              state: "planned",
+              state: "next",
             }),
             phaseCard({
               index: 4,

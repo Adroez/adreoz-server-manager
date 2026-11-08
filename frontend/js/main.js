@@ -10,6 +10,9 @@ import { renderAccount } from "./views/account.js";
 import { renderDashboard } from "./views/dashboard.js";
 import { renderLogin } from "./views/login.js";
 import { renderNotFound } from "./views/notfound.js";
+import { renderCreateServer } from "./views/server-create.js";
+import { renderServerDetail } from "./views/server-detail.js";
+import { renderServers } from "./views/servers.js";
 import { renderSettings } from "./views/settings.js";
 import { renderSetup } from "./views/setup.js";
 import { renderUsers } from "./views/users.js";
@@ -23,6 +26,27 @@ const ROUTES = [
     group: "Workspace",
     icon: "grid",
     render: renderDashboard,
+  },
+  {
+    path: "/servers",
+    title: "Servers",
+    group: "Workspace",
+    icon: "server",
+    render: renderServers,
+  },
+  {
+    path: "/servers/create",
+    title: "Create server",
+    group: "Workspace",
+    icon: "plus",
+    render: renderCreateServer,
+  },
+  {
+    path: "/servers/detail",
+    title: "Server details",
+    group: "Workspace",
+    icon: "server",
+    render: renderServerDetail,
   },
   {
     path: "/users",
@@ -71,7 +95,15 @@ function normalizePath(hash) {
 
 function resolveRoute() {
   const path = normalizePath(window.location.hash);
-  return ROUTES.find((route) => route.path === path) || NOT_FOUND;
+  // Exact match first.
+  const exact = ROUTES.find((route) => route.path === path);
+  if (exact) return exact;
+  // Dynamic match: /servers/:id
+  const serverMatch = path.match(/^\/servers\/(\d+)$/);
+  if (serverMatch) {
+    return { ...ROUTES.find((r) => r.path === "/servers/detail"), _serverId: serverMatch[1] };
+  }
+  return NOT_FOUND;
 }
 
 function resetShell({ clearHash = false } = {}) {

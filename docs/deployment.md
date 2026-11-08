@@ -103,7 +103,19 @@ The unit uses `ProtectSystem=strict` and allows writes only under
 `ReadWritePaths` accordingly. Future server process management will require
 reviewing the hardening profile and child-process permissions.
 
-## 5. Reverse proxy and TLS
+## 5. Server software installation
+
+The panel does **not** download or install Minecraft server software. Before
+starting a server, place a valid `server.jar` in the server's directory under
+`data/servers/<name>/`. The panel writes `server.properties` and `eula.txt`
+automatically.
+
+Supported software types: vanilla, paper, fabric, forge.
+
+Server directories are created with `0700` permissions; `server.properties`
+is written with `0600`.
+
+## 6. Reverse proxy and TLS
 
 The panel must be reached over HTTPS before you set `ASM_COOKIE_SECURE=true`.
 Both examples proxy to loopback and forward the real client IP.
@@ -235,6 +247,8 @@ backup and a specific reason; Phase 1 ships one initial revision.
 | Wrong client IP in audit | Configure proxy headers and set `ASM_TRUST_PROXY_HEADERS=true` only for a trusted proxy |
 | `400 Invalid host header` | Add the public hostname to `ASM_TRUSTED_HOSTS` and confirm the proxy forwards `Host` |
 | `data/asm.db` is world-readable | Run `setup.sh` or restart the panel; both enforce `0600` |
+| Server start fails with 400 | Confirm `server.jar` exists in the server directory under `data/servers/<name>/` |
+| Server process exits immediately | Check server logs via `GET /api/servers/{id}/logs`; validate `server.properties` values |
 
 ## 9. Operational checklist
 
@@ -246,6 +260,7 @@ backup and a specific reason; Phase 1 ships one initial revision.
 - [ ] `data/` and its subdirectories are `0700`; `data/asm.db` is `0600`.
 - [ ] `ASM_TRUSTED_HOSTS` includes the public hostname only.
 - [ ] `data/` is backed up.
+- [ ] Server software JARs are placed manually in `data/servers/<name>/`; the panel does not download them.
 - [ ] Proxy rate limiting and, if possible, an IP allowlist/VPN are enabled.
 - [ ] `journalctl` and failed-login audit entries are reviewed.
 - [ ] Dependencies and the host are patched on a schedule.
