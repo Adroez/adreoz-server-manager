@@ -28,6 +28,8 @@ const PATHS = {
     '<line x1="22" y1="12" x2="2" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" y1="16" x2="6.01" y2="16"/><line x1="10" y1="16" x2="10.01" y2="16"/>',
   server:
     '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>',
+  terminal:
+    '<polyline points="4 17 10 17 4 12"/><line x1="12" y1="19" x2="12" y1="17"/><polyline points="4 22 10 22 4 17"/><line x1="12" y1="24" x2="12" y1="22"/><polyline points="4 7 10 7 4 12"/><line x1="12" y1="9" x2="12" y1="7"/><rect x="18" y="4" width="2" height="2" rx="1"/><rect x="18" y="9" width="2" height="2" rx="1"/><rect x="18" y="14" width="2" height="2" rx="1"/><rect x="18" y="19" width="2" height="2" rx="1"/>',
   clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/>',
   activity:
     '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',

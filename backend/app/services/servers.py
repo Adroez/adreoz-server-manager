@@ -15,7 +15,7 @@ import socket
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Optional
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
@@ -421,9 +421,14 @@ def _validate_property_value(
 async def _launch_process(
     server: Server,
     process_manager: ProcessManager,
-    output_callback: Callable[[str], None] | None = None,
+    session_factory,
+    console_manager=None,
 ) -> None:
-    """Launch the Minecraft server Java process."""
+    """Launch the Minecraft server Java process.
+
+    Captures stdout/stderr to the database via :func:`capture_log` and
+    broadcasts live output to WebSocket console clients via ``console_manager``.
+    """
 
     directory = Path(server.directory)
     jar_path = directory / "server.jar"
@@ -444,44 +449,37 @@ async def _launch_process(
         stderr=asyncio.subprocess.PIPE,
     )
 
-    async def pump_stdout() -> None:
-        assert process.stdout is not None
+    async def pump(stream, stream_name: str) -> None:
+        assert stream is not None
         while True:
-            line = await process.stdout.readline()
+            line = await stream.readline()
             if not line:
                 break
             text = line.decode("utf-8", errors="replace").rstrip("\n")
-            if output_callback:
+            if not text:
+                continue
+            # Persist to the database.
+            db = session_factory()
+            try:
+                capture_log(db, server.id, stream_name, text)
+            finally:
+                db.close()
+            # Broadcast to WebSocket console clients.
+            if console_manager is not None:
                 try:
-                    output_callback(text)
-                except Exception:  # pragma: no cover
-                    pass
+                    await console_manager.broadcast(server.id, stream_name, text)
+                except Exception:  # pragma: no cover - broadcast resilience
+                    logger.exception(
+                        "Failed to broadcast console output for server %s", server.id
+                    )
 
-    async def pump_stderr() -> None:
-        assert process.stderr is not None
-        while True:
-            line = await process.stderr.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").rstrip("\n")
-            if output_callback:
-                try:
-                    output_callback(text)
-                except Exception:  # pragma: no cover
-                    pass
-
-    process_manager.register(
-        server.id,
-        process,
-        stdout_callback=lambda line: None,  # Captured by pump tasks below
-        stderr_callback=lambda line: None,
-    )
+    process_manager.register(server.id, process)
 
     # Start pump tasks.
     handle = process_manager.get(server.id)
     if handle is not None:
-        handle.stdout_task = asyncio.create_task(pump_stdout())
-        handle.stderr_task = asyncio.create_task(pump_stderr())
+        handle.stdout_task = asyncio.create_task(pump(process.stdout, "stdout"))
+        handle.stderr_task = asyncio.create_task(pump(process.stderr, "stderr"))
 
 
 def start_server(
@@ -491,13 +489,15 @@ def start_server(
     actor: User,
     process_manager: ProcessManager,
     settings: Settings,
+    session_factory,
+    console_manager=None,
     meta: RequestMeta | None = None,
-    output_callback: Callable[[str], None] | None = None,
 ) -> Server:
     """Start a Minecraft server process.
 
     The server must be stopped. A Java process is launched with the server
-    JAR. Output is captured via ``output_callback``.
+    JAR. Output is captured to the database and broadcast to WebSocket
+    console clients.
     """
 
     _check_server_access(server, actor)
@@ -525,7 +525,9 @@ def start_server(
     write_server_properties(server)
 
     loop = asyncio.get_event_loop()
-    loop.create_task(_launch_process(server, process_manager, output_callback))
+    loop.create_task(
+        _launch_process(server, process_manager, session_factory, console_manager)
+    )
 
     server.status = "starting"
     record_audit(
@@ -589,8 +591,9 @@ def restart_server(
     actor: User,
     process_manager: ProcessManager,
     settings: Settings,
+    session_factory,
+    console_manager=None,
     meta: RequestMeta | None = None,
-    output_callback: Callable[[str], None] | None = None,
 ) -> Server:
     """Restart a server: stop then start."""
 
@@ -612,8 +615,9 @@ def restart_server(
         actor=actor,
         process_manager=process_manager,
         settings=settings,
+        session_factory=session_factory,
+        console_manager=console_manager,
         meta=meta,
-        output_callback=output_callback,
     )
 
 

@@ -15,10 +15,11 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.api.routes import auth, dashboard, health, servers, setup, users
+from app.api.routes import auth, consoles, dashboard, health, servers, setup, users
 from app.api.routes import settings as settings_routes
 from app.core.config import Settings, get_settings
 from app.core.rate_limit import SlidingWindowLimiter
+from app.core.console import ConsoleManager
 from app.core.process import ProcessManager
 from app.database.session import (
     build_engine,
@@ -101,7 +102,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.login_limiter = SlidingWindowLimiter(
         settings.login_attempt_limit, settings.login_attempt_window_seconds
     )
-    app.state.process_manager = ProcessManager()
+    settings._process_manager = ProcessManager()
+    settings._console_manager = ConsoleManager()
+    app.state.process_manager = settings._process_manager
+    app.state.console_manager = settings._console_manager
 
     app.add_middleware(
         TrustedHostMiddleware,
@@ -153,6 +157,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(users.router, prefix=api_prefix)
     app.include_router(settings_routes.router, prefix=api_prefix)
     app.include_router(servers.router, prefix=api_prefix)
+    app.include_router(consoles.router, prefix=api_prefix)
 
     if settings.frontend_dir.is_dir():
         app.mount(

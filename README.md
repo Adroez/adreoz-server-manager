@@ -7,10 +7,12 @@ a dependency-free vanilla JavaScript frontend.
 **Phase 1 — Foundation** is complete: identity, access, and operational visibility.
 **Phase 2 — Server Lifecycle** is complete: create, configure, start, and stop
 Minecraft servers with per-user ownership.
+**Phase 3 — Live Console** is complete: real-time WebSocket console streaming
+and command input for running Minecraft servers.
 
 ![Adreoz Server Manager dashboard](docs/images/dashboard.webp)
 
-![Status](https://img.shields.io/badge/phase-2%20server%20lifecycle-8b5cf6)
+![Status](https://img.shields.io/badge/phase-3%20live%20console-8b5cf6)
 
 ---
 
@@ -36,6 +38,11 @@ Minecraft servers with per-user ownership.
   servers (vanilla, Paper, Fabric, Forge). Per-user ownership enforced on every
   endpoint. Server status, configuration, and process output tracked in the
   database.
+- **Live console** — WebSocket-based real-time console output streaming and
+  command input for running servers. Multiple clients can view the same server
+  console simultaneously. Server ownership enforced on every WebSocket
+  connection. No `shell=True`; commands are sent directly to the server
+  process stdin.
 - **Premium dark UI** — lavender/purple design system, responsive layout,
   accessible components, modals, toasts, and inline validation.
 
@@ -175,6 +182,7 @@ endpoints require both an authenticated session cookie **and** the
 | `POST` | `/api/servers/{id}/stop` | Session + CSRF | Stop server process |
 | `POST` | `/api/servers/{id}/restart` | Session + CSRF | Restart server process |
 | `GET` | `/api/servers/{id}/logs` | Session | Server process output |
+| `WS` | `/api/servers/{id}/console` | Session cookie | Live console output + command input |
 
 In `development`, interactive docs are available at `/docs`. In `production`
 they are disabled.
@@ -195,7 +203,7 @@ node --test frontend/js/tests/format.test.mjs
 
 Current results for this phase:
 
-- Backend: **49 passed, 1 warning** (36 Phase 1 + 13 Phase 2 server lifecycle).
+- Backend: **59 passed, 1 warning** (36 Phase 1 + 13 Phase 2 server lifecycle + 10 Phase 3 console).
 - Frontend: **8 passed, 0 failed**.
 
 The backend suite covers setup locking, login/logout, login session rotation,
@@ -203,9 +211,10 @@ CSRF enforcement, RBAC, cross-user denial, rate limiting, password change and
 session rotation, deactivation and reactivation, last-admin and self
 protections, delete cascades, audit logging, security headers, trusted-host
 rejection, strict request bodies, owner-only file permissions, secure
-cookies/HSTS, server CRUD, server ownership, server lifecycle, migrations, and
-live dashboard metrics. The frontend suite covers formatting helpers used across
-views.
+cookies/HSTS, server CRUD, server ownership, server lifecycle, WebSocket
+console authentication, console ownership, console command delivery, console
+disconnection, migrations, and live dashboard metrics. The frontend suite covers
+formatting helpers used across views.
 
 ## Security posture
 
@@ -240,12 +249,13 @@ limitations.
 | --- | --- | --- |
 | 1 | Foundation: auth, RBAC, users, dashboard, settings | **Complete** |
 | 2 | Server lifecycle: create, configure, start, stop | **Complete** |
-| 3 | Console & files: WebSocket console, file manager | Next |
-| 4 | Backups, schedules, and restore | Planned |
-| 5 | Java/runtime management and version pinning | Planned |
-| 6 | Per-server permissions and collaboration | Planned |
-| 7 | Monitoring, alerts, and metrics history | Planned |
-| 8 | Automation, API tokens, and integrations | Planned |
+| 3 | Live console: WebSocket streaming, command input | **Complete** |
+| 4 | Console & files: WebSocket console, file manager | Next |
+| 5 | Backups, schedules, and restore | Planned |
+| 6 | Java/runtime management and version pinning | Planned |
+| 7 | Per-server permissions and collaboration | Planned |
+| 8 | Monitoring, alerts, and metrics history | Planned |
+| 9 | Automation, API tokens, and integrations | Planned |
 
 Phase 1 deliberately ships no server controls. The dashboard roadmap is
 informational; it does not contain placeholder actions.

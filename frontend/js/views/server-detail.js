@@ -59,6 +59,15 @@ export async function renderServerDetail(view, ctx) {
     if (data.status === "running") {
       headerActions.push(
         actionButton({
+          label: "Console",
+          iconName: "terminal",
+          handler: () => {
+            window.location.hash = `#/servers/${data.id}/console`;
+          },
+        })
+      );
+      headerActions.push(
+        actionButton({
           label: "Stop",
           iconName: "power",
           variant: "danger",

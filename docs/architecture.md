@@ -227,6 +227,27 @@ Ownership and admin rules:
 - `GET /api/servers` — users see their own; admins see all.
 - `GET/PATCH/DELETE/start/stop/restart /api/servers/{id}` — owner or admin only.
 - Configuration changes (`PATCH`) require `status = stopped`.
+### Live console
+
+`WS /api/servers/{id}/console` provides real-time console access:
+
+1. The client connects via WebSocket with the session cookie (sent automatically
+   by browsers). The cookie is validated to recover the authenticated user.
+2. Server ownership is enforced: the caller must own the server or be an
+   administrator; otherwise the connection is rejected with `403`.
+3. On successful connection, the server sends the recent log history (bounded
+   buffer, 500 lines) so the client sees immediate context.
+4. Live stdout/stderr lines from the server process are broadcast to all
+   connected WebSocket clients for that server.
+5. Client text messages are written directly to the server process stdin —
+   never executed through a shell (`shell=True` is never used).
+6. Empty commands are ignored. Commands sent to a stopped server receive a
+   system message.
+7. Client disconnects are handled gracefully; the server attempts automatic
+   reconnection with exponential backoff.
+8. Log buffering is bounded per server to prevent unbounded memory growth.
+
+
 - Deletion (`DELETE`) requires `status = stopped`.
 
 ### Errors

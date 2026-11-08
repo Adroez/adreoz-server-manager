@@ -115,7 +115,45 @@ Supported software types: vanilla, paper, fabric, forge.
 Server directories are created with `0700` permissions; `server.properties`
 is written with `0600`.
 
-## 6. Reverse proxy and TLS
+## 6. WebSocket console deployment
+
+The live console uses WebSockets (`WS /api/servers/{id}/console`). When
+deploying behind a reverse proxy, the proxy must support WebSocket upgrades
+and forward the `Connection` and `Upgrade` headers.
+
+### Caddy with WebSocket support
+
+```caddyfile
+panel.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Real-IP {remote_host}
+        header_up Connection {>Connection}
+        header_up Upgrade {>Upgrade}
+    }
+}
+```
+
+### nginx with WebSocket support
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
+
+The session cookie is sent automatically by the browser over the WebSocket
+connection. Ensure `ASM_COOKIE_SECURE=true` when using WSS (secure WebSocket)
+behind a TLS reverse proxy.
+
+## 7. Reverse proxy and TLS
 
 The panel must be reached over HTTPS before you set `ASM_COOKIE_SECURE=true`.
 Both examples proxy to loopback and forward the real client IP.
@@ -173,7 +211,7 @@ request reaches the panel.
 > `proxy_set_header Connection "upgrade"` (or Caddy's default upgrade
 > handling).
 
-## 6. Backups
+## 8. Backups
 
 The entire runtime state is in `data/`:
 
@@ -216,7 +254,7 @@ Restoring an old database also restores old users, sessions, and settings.
 Revoke sessions after a suspected compromise by changing passwords or clearing
 `auth_sessions`.
 
-## 7. Upgrades
+## 10. Upgrades
 
 ```bash
 sudo systemctl stop adreoz-server-manager
@@ -231,7 +269,7 @@ before every upgrade.
 Never run `alembic downgrade` on a production database without a verified
 backup and a specific reason; Phase 1 ships one initial revision.
 
-## 8. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom | Check |
 | --- | --- |

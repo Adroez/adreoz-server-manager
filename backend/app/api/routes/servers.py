@@ -16,6 +16,7 @@ from app.api.deps import (
     require_admin_write,
     require_csrf,
 )
+from app.core.console import ConsoleManager
 from app.core.config import Settings
 from app.core.process import ProcessManager
 from app.models.server import Server, ServerLog
@@ -50,6 +51,14 @@ def _get_process_manager(settings: Settings) -> ProcessManager:
         pm = ProcessManager()
         settings._process_manager = pm
     return pm
+
+
+def _get_console_manager(settings: Settings) -> ConsoleManager:
+    cm = getattr(settings, "_console_manager", None)
+    if cm is None:
+        cm = ConsoleManager()
+        settings._console_manager = cm
+    return cm
 
 
 def _check_server_ownership(server: Server, auth: AuthContext) -> None:
@@ -170,6 +179,7 @@ def start_server_endpoint(
     meta = request_meta(request)
 
     process_manager = _get_process_manager(settings)
+    console_manager = _get_console_manager(settings)
 
     _start_server(
         db,
@@ -177,6 +187,8 @@ def start_server_endpoint(
         actor=auth.user,
         process_manager=process_manager,
         settings=settings,
+        session_factory=request.app.state.session_factory,
+        console_manager=console_manager,
         meta=meta,
     )
     return ServerActionResponse(
@@ -225,6 +237,7 @@ def restart_server_endpoint(
     meta = request_meta(request)
 
     process_manager = _get_process_manager(settings)
+    console_manager = _get_console_manager(settings)
 
     _restart_server(
         db,
@@ -232,6 +245,8 @@ def restart_server_endpoint(
         actor=auth.user,
         process_manager=process_manager,
         settings=settings,
+        session_factory=request.app.state.session_factory,
+        console_manager=console_manager,
         meta=meta,
     )
     return ServerActionResponse(

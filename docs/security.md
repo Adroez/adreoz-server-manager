@@ -140,6 +140,23 @@ request value is interpolated into SQL text.
   the operator must place `server.jar` in the server directory before
   starting.
 
+### Live console security
+
+- WebSocket connections are authenticated via the session cookie; unauthenticated
+  connections are rejected with `403`.
+- Server ownership is enforced on every WebSocket connection; non-owners and
+  non-administrators cannot connect to another user's server console.
+- Server IDs are validated against the database before accepting a connection;
+  frontend-supplied IDs are never trusted without authorization checks.
+- Client commands are written directly to the server process stdin; no
+  `shell=True` is ever used, preventing arbitrary host shell execution.
+- Empty commands are ignored; commands to a stopped server return a system
+  message.
+- Log broadcasting is bounded per server (500-line buffer) to prevent
+  unbounded memory growth.
+- WebSocket disconnects are handled gracefully; the server cleans up client
+  subscriptions on disconnect.
+
 ## Rate limiting
 
 Login and setup share a thread-safe, in-memory sliding window keyed by
