@@ -83,6 +83,24 @@ export async function renderServerDetail(view, ctx) {
         })
       );
     }
+    headerActions.push(
+      actionButton({
+        label: "File manager",
+        iconName: "folder",
+        handler: () => {
+          window.location.hash = `#/servers/${data.id}/files`;
+        },
+      })
+    );
+    headerActions.push(
+      actionButton({
+        label: "Configuration",
+        iconName: "settings",
+        handler: () => {
+          window.location.hash = `#/servers/${data.id}/config`;
+        },
+      })
+    );
     if (data.status === "stopped" || data.status === "error") {
       headerActions.push(
         actionButton({

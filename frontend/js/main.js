@@ -11,7 +11,10 @@ import { renderDashboard } from "./views/dashboard.js";
 import { renderLogin } from "./views/login.js";
 import { renderNotFound } from "./views/notfound.js";
 import { renderCreateServer } from "./views/server-create.js";
+import { renderFileEdit } from "./views/file-edit.js";
+import { renderFileManager } from "./views/files.js";
 import { renderServerConsole } from "./views/server-console.js";
+import { renderServerConfig } from "./views/server-config.js";
 import { renderServerDetail } from "./views/server-detail.js";
 import { renderServers } from "./views/servers.js";
 import { renderSettings } from "./views/settings.js";
@@ -48,6 +51,27 @@ const ROUTES = [
     group: "Workspace",
     icon: "server",
     render: renderServerDetail,
+  },
+  {
+    path: "/servers/files",
+    title: "File manager",
+    group: "Workspace",
+    icon: "folder",
+    render: renderFileManager,
+  },
+  {
+    path: "/servers/files/edit",
+    title: "File editor",
+    group: "Workspace",
+    icon: "file-text",
+    render: renderFileEdit,
+  },
+  {
+    path: "/servers/config",
+    title: "Server configuration",
+    group: "Workspace",
+    icon: "settings",
+    render: renderServerConfig,
   },
   {
     path: "/servers/console",
@@ -102,17 +126,32 @@ function normalizePath(hash) {
 }
 
 function resolveRoute() {
-  const path = normalizePath(window.location.hash);
+  const hash = normalizePath(window.location.hash);
   // Exact match first.
-  const exact = ROUTES.find((route) => route.path === path);
+  const exact = ROUTES.find((route) => route.path === hash);
   if (exact) return exact;
   // Dynamic match: /servers/:id
-  const serverMatch = path.match(/^\/servers\/(\d+)$/);
+  const serverMatch = hash.match(/^\/servers\/(\d+)$/);
   if (serverMatch) {
     return { ...ROUTES.find((r) => r.path === "/servers/detail"), _serverId: serverMatch[1] };
   }
+  // Dynamic match: /servers/:id/files
+  const filesMatch = hash.match(/^\/servers\/(\d+)\/files$/);
+  if (filesMatch) {
+    return { ...ROUTES.find((r) => r.path === "/servers/files"), _serverId: filesMatch[1] };
+  }
+  // Dynamic match: /servers/:id/files/edit
+  const fileEditMatch = hash.match(/^\/servers\/(\d+)\/files\/edit$/);
+  if (fileEditMatch) {
+    return { ...ROUTES.find((r) => r.path === "/servers/files/edit"), _serverId: fileEditMatch[1] };
+  }
+  // Dynamic match: /servers/:id/config
+  const configMatch = hash.match(/^\/servers\/(\d+)\/config$/);
+  if (configMatch) {
+    return { ...ROUTES.find((r) => r.path === "/servers/config"), _serverId: configMatch[1] };
+  }
   // Dynamic match: /servers/:id/console
-  const consoleMatch = path.match(/^\/servers\/(\d+)\/console$/);
+  const consoleMatch = hash.match(/^\/servers\/(\d+)\/console$/);
   if (consoleMatch) {
     return { ...ROUTES.find((r) => r.path === "/servers/console"), _serverId: consoleMatch[1] };
   }

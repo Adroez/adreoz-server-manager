@@ -153,7 +153,17 @@ The session cookie is sent automatically by the browser over the WebSocket
 connection. Ensure `ASM_COOKIE_SECURE=true` when using WSS (secure WebSocket)
 behind a TLS reverse proxy.
 
-## 7. Reverse proxy and TLS
+## 7. File manager deployment
+
+The file manager allows users to browse, create, edit, and delete files within
+each server's directory under `data/servers/<name>/`. File uploads are limited
+to 100 MB per file; file reads are limited to 16 MB.
+
+Uploaded files are stored as-is and are not executed automatically. The panel
+does not scan uploaded files for malware; administrators should exercise caution
+when allowing users to upload executable files.
+
+## 9. Reverse proxy and TLS
 
 The panel must be reached over HTTPS before you set `ASM_COOKIE_SECURE=true`.
 Both examples proxy to loopback and forward the real client IP.
@@ -211,7 +221,7 @@ request reaches the panel.
 > `proxy_set_header Connection "upgrade"` (or Caddy's default upgrade
 > handling).
 
-## 8. Backups
+## 10. Backups
 
 The entire runtime state is in `data/`:
 
@@ -254,7 +264,7 @@ Restoring an old database also restores old users, sessions, and settings.
 Revoke sessions after a suspected compromise by changing passwords or clearing
 `auth_sessions`.
 
-## 10. Upgrades
+## 11. Upgrades
 
 ```bash
 sudo systemctl stop adreoz-server-manager
@@ -269,7 +279,7 @@ before every upgrade.
 Never run `alembic downgrade` on a production database without a verified
 backup and a specific reason; Phase 1 ships one initial revision.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
@@ -288,7 +298,7 @@ backup and a specific reason; Phase 1 ships one initial revision.
 | Server start fails with 400 | Confirm `server.jar` exists in the server directory under `data/servers/<name>/` |
 | Server process exits immediately | Check server logs via `GET /api/servers/{id}/logs`; validate `server.properties` values |
 
-## 9. Operational checklist
+## 13. Operational checklist
 
 - [ ] Panel runs as a dedicated non-root user.
 - [ ] `ASM_HOST=127.0.0.1`; only the proxy is reachable externally.

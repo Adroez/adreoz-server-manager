@@ -9,10 +9,12 @@ a dependency-free vanilla JavaScript frontend.
 Minecraft servers with per-user ownership.
 **Phase 3 — Live Console** is complete: real-time WebSocket console streaming
 and command input for running Minecraft servers.
+**Phase 4 — File Manager & Configuration** is complete: secure file browsing,
+editing, upload/download, and server.properties configuration editor.
 
 ![Adreoz Server Manager dashboard](docs/images/dashboard.webp)
 
-![Status](https://img.shields.io/badge/phase-3%20live%20console-8b5cf6)
+![Status](https://img.shields.io/badge/phase-4%20file%20manager-8b5cf6)
 
 ---
 
@@ -43,6 +45,12 @@ and command input for running Minecraft servers.
   console simultaneously. Server ownership enforced on every WebSocket
   connection. No `shell=True`; commands are sent directly to the server
   process stdin.
+- **File manager** — secure file browser for each server directory with
+  browse, create, edit, rename, delete, download, and upload. All paths are
+  validated to prevent directory traversal and symlink escapes. Server
+  ownership enforced on every endpoint.
+- **Configuration editor** — structured editor for server.properties with
+  validation, unknown property preservation, and restart warnings.
 - **Premium dark UI** — lavender/purple design system, responsive layout,
   accessible components, modals, toasts, and inline validation.
 
@@ -183,6 +191,17 @@ endpoints require both an authenticated session cookie **and** the
 | `POST` | `/api/servers/{id}/restart` | Session + CSRF | Restart server process |
 | `GET` | `/api/servers/{id}/logs` | Session | Server process output |
 | `WS` | `/api/servers/{id}/console` | Session cookie | Live console output + command input |
+| `GET` | `/api/servers/{id}/files` | Session | List server directory |
+| `GET` | `/api/servers/{id}/files/read` | Session | Read file contents |
+| `POST` | `/api/servers/{id}/files/write` | Session + CSRF | Write/create file |
+| `POST` | `/api/servers/{id}/files/folder` | Session + CSRF | Create folder |
+| `POST` | `/api/servers/{id}/files/rename` | Session + CSRF | Rename file/folder |
+| `DELETE` | `/api/servers/{id}/files` | Session + CSRF | Delete file/folder |
+| `GET` | `/api/servers/{id}/files/download` | Session | Download file |
+| `POST` | `/api/servers/{id}/files/upload` | Session + CSRF | Upload file |
+| `GET` | `/api/servers/{id}/config/properties` | Session | Read server.properties |
+| `PATCH` | `/api/servers/{id}/config/properties` | Session + CSRF | Update server.properties |
+| `GET` | `/api/servers/{id}/config/validation` | Session | Config validation info |
 
 In `development`, interactive docs are available at `/docs`. In `production`
 they are disabled.
@@ -203,7 +222,7 @@ node --test frontend/js/tests/format.test.mjs
 
 Current results for this phase:
 
-- Backend: **59 passed, 1 warning** (36 Phase 1 + 13 Phase 2 server lifecycle + 10 Phase 3 console).
+- Backend: **72 passed, 1 warning** (36 Phase 1 + 13 Phase 2 server lifecycle + 10 Phase 3 console + 13 Phase 4 file manager).
 - Frontend: **8 passed, 0 failed**.
 
 The backend suite covers setup locking, login/logout, login session rotation,
@@ -213,8 +232,10 @@ protections, delete cascades, audit logging, security headers, trusted-host
 rejection, strict request bodies, owner-only file permissions, secure
 cookies/HSTS, server CRUD, server ownership, server lifecycle, WebSocket
 console authentication, console ownership, console command delivery, console
-disconnection, migrations, and live dashboard metrics. The frontend suite covers
-formatting helpers used across views.
+disconnection, file manager CRUD, file ownership, directory traversal
+prevention, symlink escape prevention, configuration editing, migrations, and
+live dashboard metrics. The frontend suite covers formatting helpers used across
+views.
 
 ## Security posture
 
@@ -250,8 +271,8 @@ limitations.
 | 1 | Foundation: auth, RBAC, users, dashboard, settings | **Complete** |
 | 2 | Server lifecycle: create, configure, start, stop | **Complete** |
 | 3 | Live console: WebSocket streaming, command input | **Complete** |
-| 4 | Console & files: WebSocket console, file manager | Next |
-| 5 | Backups, schedules, and restore | Planned |
+| 4 | File manager & configuration editor | **Complete** |
+| 5 | Console & files: WebSocket console, file manager | Next |
 | 6 | Java/runtime management and version pinning | Planned |
 | 7 | Per-server permissions and collaboration | Planned |
 | 8 | Monitoring, alerts, and metrics history | Planned |

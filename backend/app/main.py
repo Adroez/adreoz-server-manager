@@ -15,7 +15,16 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.api.routes import auth, consoles, dashboard, health, servers, setup, users
+from app.api.routes import (
+    auth,
+    consoles,
+    dashboard,
+    files,
+    health,
+    servers,
+    setup,
+    users,
+)
 from app.api.routes import settings as settings_routes
 from app.core.config import Settings, get_settings
 from app.core.rate_limit import SlidingWindowLimiter
@@ -157,6 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(users.router, prefix=api_prefix)
     app.include_router(settings_routes.router, prefix=api_prefix)
     app.include_router(servers.router, prefix=api_prefix)
+    app.include_router(files.router, prefix=api_prefix)
     app.include_router(consoles.router, prefix=api_prefix)
 
     if settings.frontend_dir.is_dir():

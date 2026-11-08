@@ -157,6 +157,27 @@ request value is interpolated into SQL text.
 - WebSocket disconnects are handled gracefully; the server cleans up client
   subscriptions on disconnect.
 
+### File manager security
+
+- All file operations are authenticated via the session cookie; unauthenticated
+  connections are rejected with `401`.
+- Server ownership is enforced on every file endpoint; non-owners and
+  non-administrators cannot access another user's files.
+- Server IDs are validated against the database before accepting any file
+  operation; frontend-supplied IDs are never trusted without authorization
+  checks.
+- All file paths are resolved and validated before every operation. The resolved
+  path must live inside the server's directory under `data/servers/`.
+- Directory traversal (`..`) is rejected at the path validation layer.
+- Symlinks are followed by `Path.resolve()`; if the target escapes the server
+  directory, the request is rejected.
+- File and folder names are validated against a safe pattern (letters, numbers,
+  dots, underscores, hyphens only; no reserved names like `root`, `system`, etc.).
+- File reads are limited to 16 MB; uploads are limited to 100 MB.
+- Uploaded files are stored as-is and are not executed automatically.
+- All file operations (create, read, write, rename, delete, upload) are audited
+  with actor, action, and detail.
+
 ## Rate limiting
 
 Login and setup share a thread-safe, in-memory sliding window keyed by

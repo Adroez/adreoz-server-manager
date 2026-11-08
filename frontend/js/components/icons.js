@@ -30,6 +30,26 @@ const PATHS = {
     '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>',
   terminal:
     '<polyline points="4 17 10 17 4 12"/><line x1="12" y1="19" x2="12" y1="17"/><polyline points="4 22 10 22 4 17"/><line x1="12" y1="24" x2="12" y1="22"/><polyline points="4 7 10 7 4 12"/><line x1="12" y1="9" x2="12" y1="7"/><rect x="18" y="4" width="2" height="2" rx="1"/><rect x="18" y="9" width="2" height="2" rx="1"/><rect x="18" y="14" width="2" height="2" rx="1"/><rect x="18" y="19" width="2" height="2" rx="1"/>',
+  folder:
+    '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 2h9a2 2 0 0 1 2 2z"/><polyline points="22 7 17 12 22 17"/>',
+  "folder-open":
+    '<path d="M3 7a2 2 0 0 1 2-2h14l2 2h6a2 2 0 0 1 2 2v22a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z"/><polyline points="9 18 5 12 9 6"/>',
+  file:
+    '<path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>',
+  home:
+    '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+  upload:
+    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y1="15"/>',
+  edit:
+    '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><polyline points="18.5 2.5 12.5 8.5 2.5 18.5"/>',
+  edit-2:
+    '<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
+  file:
+    '<path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>',
+  "file-text":
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>',
+  image:
+    '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/><polyline points="3 21 19 21" style="fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;"/>',
   clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/>',
   activity:
     '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',

@@ -969,3 +969,308 @@
     width: 100%;
   }
 }
+
+/* -------------------------------------------------------------------- file manager */
+.file-manager-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--gradient-surface);
+}
+
+.file-manager-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.file-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.file-breadcrumb-sep {
+  margin: 0 2px;
+  color: var(--text-dim);
+}
+
+.file-breadcrumb-current {
+  color: var(--lavender);
+  font-weight: 600;
+}
+
+.file-manager-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.file-table-wrap {
+  overflow-x: auto;
+  margin-top: 16px;
+}
+
+.file-name-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.file-name-link:hover {
+  color: var(--lavender);
+}
+
+.file-icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+}
+
+.file-name {
+  font-weight: 500;
+}
+
+/* -------------------------------------------------------------------- file editor */
+.file-editor-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--gradient-surface);
+}
+
+.file-info-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.file-info-path {
+  font-weight: 600;
+  color: var(--text);
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-info-meta {
+  font-family: var(--font-mono);
+}
+
+.file-info-dirty {
+  color: var(--amber);
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.binary-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  color: var(--red-soft);
+}
+
+.binary-notice .binary-icon {
+  flex: none;
+}
+
+.file-editor-wrap {
+  padding: 0 20px 20px;
+}
+
+.file-editor {
+  width: 100%;
+  min-height: 500px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  color: var(--text);
+  resize: vertical;
+}
+
+.file-editor:focus {
+  outline: 2px solid var(--violet-bright);
+  outline-offset: -1px;
+}
+
+@media (max-width: 640px) {
+  .file-manager-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .file-breadcrumbs {
+    flex-wrap: wrap;
+  }
+
+  .file-manager-toolbar {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .file-editor-wrap {
+    padding: 0 12px 12px;
+  }
+}
+
+/* -------------------------------------------------------------------- config editor */
+.config-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--gradient-surface);
+}
+
+.config-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.config-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.98rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.config-title svg {
+  color: var(--lavender);
+}
+
+.config-subtitle {
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
+.config-properties {
+  display: grid;
+  gap: 0;
+}
+
+.config-row {
+  display: grid;
+  grid-template-columns: 220px 1fr 140px;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+
+.config-row:last-child {
+  border-bottom: 0;
+}
+
+.config-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.config-label label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.config-key {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.config-input-cell {
+  display: flex;
+  align-items: center;
+}
+
+.config-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.82rem;
+}
+
+.config-input:focus {
+  outline: 2px solid var(--violet-bright);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+
+.config-select {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.config-hint {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.config-actions-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.config-dirty-indicator {
+  color: var(--amber);
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 640px) {
+  .config-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .config-hint {
+    grid-column: 1;
+    margin-top: 4px;
+  }
+
+  .config-input-cell {
+    grid-column: 1;
+  }
+}

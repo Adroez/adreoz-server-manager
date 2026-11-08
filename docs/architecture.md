@@ -248,6 +248,40 @@ Ownership and admin rules:
 8. Log buffering is bounded per server to prevent unbounded memory growth.
 
 
+### File Manager
+
+`GET/POST/PATCH/DELETE /api/servers/{id}/files` provides file management for
+each server's directory:
+
+1. All file operations are authenticated via the session cookie and enforce
+   server ownership (admin access all servers).
+2. Server directory paths are resolved and validated before every operation.
+   The resolved path must live inside the server's directory under
+   `data/servers/`. Directory traversal (`..`) and symlink escapes are
+   rejected.
+3. File and folder names are validated against a safe pattern (letters,
+   numbers, dots, underscores, hyphens only; no reserved names).
+4. File reads are limited to 16 MB; uploads are limited to 100 MB.
+5. Uploaded files are stored as-is and are not executed automatically.
+6. All file operations are audited with actor, action, and detail.
+
+### Configuration Editor
+
+`GET/PATCH /api/servers/{id}/config/properties` provides editing of
+`server.properties`:
+
+1. Configuration is authenticated and ownership-enforced like all server
+   operations.
+2. `server.properties` is parsed line-by-line, preserving comments, blank
+   lines, and unknown properties not included in the update.
+3. All values are validated before writing: booleans (true/false), enums
+   (difficulty, gamemode, etc.), and integers with ranges (port, max-players,
+   view-distance, etc.).
+4. Changes require a server restart to take effect; the UI warns users
+   accordingly.
+5. All configuration changes are audited.
+
+
 - Deletion (`DELETE`) requires `status = stopped`.
 
 ### Errors
@@ -286,6 +320,10 @@ Starlette's `TrustedHostMiddleware` before routing.
   secure-cookie/HSTS behavior.
 - Server tests assert CRUD, ownership enforcement, unauthorized access, invalid
   configuration, lifecycle state transitions, and process failure handling.
+- File manager tests assert directory traversal rejection, symlink escape
+  prevention, cross-user denial, file size limits, and invalid filenames.
+- Config editor tests assert property parsing, unknown property preservation,
+  and invalid value rejection.
 - Dashboard tests assert response shape and plausible live values; they do not
   assert exact CPU or memory numbers.
 - Frontend format helpers are unit-tested with Node's built-in test runner.
@@ -300,5 +338,6 @@ Starlette's `TrustedHostMiddleware` before routing.
   cost of no bundling or TypeScript.
 - **Loopback default.** Network exposure requires an explicit configuration
   change and a TLS proxy.
-- **Phase boundary.** Server management, file operations, backups, and console
-  streaming belong to later phases and are intentionally absent.
+- **Phase boundary.** Server management and console streaming belong to
+  Phase 2 and Phase 3 respectively and are now implemented. File operations
+  (Phase 4) are also implemented.
