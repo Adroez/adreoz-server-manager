@@ -527,6 +527,7 @@ async def _launch_process(
     process = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(directory),
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
