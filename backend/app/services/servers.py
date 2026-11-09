@@ -34,6 +34,7 @@ from app.schemas.server import (
 )
 from app.services.audit import RequestMeta, record_audit
 from app.services.errors import ConflictError, DomainError, ForbiddenError, NotFoundError
+from app.services.operations import OperationType, acquire_operation_lock
 
 logger = logging.getLogger("asm.servers")
 
@@ -318,6 +319,8 @@ def delete_server(
     """Delete a server record and its directory contents.
 
     The server must be stopped. Its directory is removed from disk.
+
+    This operation is serialized with all other lifecycle and backup operations.
     """
 
     _check_server_access(server, actor)
@@ -325,29 +328,35 @@ def delete_server(
     if server.status != "stopped":
         raise DomainError("Only stopped servers can be deleted.")
 
-    server_name = server.name
-    server_id = server.id
-    directory = Path(server.directory)
+    with acquire_operation_lock(server.id, OperationType.DELETE):
+        # Re-check status after acquiring lock.
+        db.refresh(server)
+        if server.status != "stopped":
+            raise DomainError("Only stopped servers can be deleted.")
 
-    db.delete(server)
-    record_audit(
-        db,
-        action="server.deleted",
-        actor=actor,
-        detail=f"Deleted server '{server_name}' (id={server_id}).",
-        meta=meta,
-    )
-    db.commit()
+        server_name = server.name
+        server_id = server.id
+        directory = Path(server.directory)
 
-    # Remove the server directory from disk after the DB commit succeeds.
-    if directory.exists() and directory.is_dir():
-        try:
-            shutil.rmtree(directory)
-        except OSError as exc:
-            logger.exception("Failed to remove server directory %s", directory)
-            raise DomainError(
-                f"Server record deleted but directory could not be removed: {exc}"
-            ) from exc
+        db.delete(server)
+        record_audit(
+            db,
+            action="server.deleted",
+            actor=actor,
+            detail=f"Deleted server '{server_name}' (id={server_id}).",
+            meta=meta,
+        )
+        db.commit()
+
+        # Remove the server directory from disk after the DB commit succeeds.
+        if directory.exists() and directory.is_dir():
+            try:
+                shutil.rmtree(directory)
+            except OSError as exc:
+                logger.exception("Failed to remove server directory %s", directory)
+                raise DomainError(
+                    f"Server record deleted but directory could not be removed: {exc}"
+                ) from exc
 
 
 def write_server_properties(server: Server) -> None:
@@ -428,6 +437,8 @@ async def _launch_process(
 
     Captures stdout/stderr to the database via :func:`capture_log` and
     broadcasts live output to WebSocket console clients via ``console_manager``.
+
+    Exactly one reader task per stream is created by ProcessManager.register.
     """
 
     directory = Path(server.directory)
@@ -449,37 +460,27 @@ async def _launch_process(
         stderr=asyncio.subprocess.PIPE,
     )
 
-    async def pump(stream, stream_name: str) -> None:
-        assert stream is not None
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").rstrip("\n")
-            if not text:
-                continue
-            # Persist to the database.
-            db = session_factory()
+    def output_callback(server_id: int, stream_name: str, text: str) -> None:
+        """Callback for process output: persist to DB and broadcast."""
+        # Persist to the database.
+        db = session_factory()
+        try:
+            capture_log(db, server_id, stream_name, text)
+        finally:
+            db.close()
+        # Broadcast to WebSocket console clients.
+        if console_manager is not None:
             try:
-                capture_log(db, server.id, stream_name, text)
-            finally:
-                db.close()
-            # Broadcast to WebSocket console clients.
-            if console_manager is not None:
-                try:
-                    await console_manager.broadcast(server.id, stream_name, text)
-                except Exception:  # pragma: no cover - broadcast resilience
-                    logger.exception(
-                        "Failed to broadcast console output for server %s", server.id
-                    )
+                # Schedule broadcast on the event loop.
+                asyncio.get_event_loop().create_task(
+                    console_manager.broadcast(server_id, stream_name, text)
+                )
+            except Exception:  # pragma: no cover - broadcast resilience
+                logger.exception(
+                    "Failed to schedule broadcast for server %s", server_id
+                )
 
-    process_manager.register(server.id, process)
-
-    # Start pump tasks.
-    handle = process_manager.get(server.id)
-    if handle is not None:
-        handle.stdout_task = asyncio.create_task(pump(process.stdout, "stdout"))
-        handle.stderr_task = asyncio.create_task(pump(process.stderr, "stderr"))
+    process_manager.register(server.id, process, output_callback=output_callback)
 
 
 def start_server(
@@ -502,43 +503,44 @@ def start_server(
 
     _check_server_access(server, actor)
 
-    if process_manager.has(server.id):
-        handle = process_manager.get(server.id)
-        if handle is not None and handle.is_running:
-            raise ConflictError(f"Server '{server.name}' is already running.")
+    with acquire_operation_lock(server.id, OperationType.START):
+        if process_manager.has(server.id):
+            handle = process_manager.get(server.id)
+            if handle is not None and handle.is_running:
+                raise ConflictError(f"Server '{server.name}' is already running.")
 
-    if server.status not in ("stopped", "error"):
-        raise DomainError(f"Cannot start server in '{server.status}' state.")
+        if server.status not in ("stopped", "error"):
+            raise DomainError(f"Cannot start server in '{server.status}' state.")
 
-    directory = Path(server.directory)
-    if not directory.exists():
-        raise NotFoundError(f"Server directory '{directory}' does not exist.")
+        directory = Path(server.directory)
+        if not directory.exists():
+            raise NotFoundError(f"Server directory '{directory}' does not exist.")
 
-    jar_path = directory / "server.jar"
-    if not jar_path.exists():
-        raise DomainError(
-            f"Server software (server.jar) is not installed in {directory}. "
-            "Import or install software before starting."
+        jar_path = directory / "server.jar"
+        if not jar_path.exists():
+            raise DomainError(
+                f"Server software (server.jar) is not installed in {directory}. "
+                "Import or install software before starting."
+            )
+
+        # Write server.properties before starting.
+        write_server_properties(server)
+
+        loop = asyncio.get_event_loop()
+        loop.create_task(
+            _launch_process(server, process_manager, session_factory, console_manager)
         )
 
-    # Write server.properties before starting.
-    write_server_properties(server)
-
-    loop = asyncio.get_event_loop()
-    loop.create_task(
-        _launch_process(server, process_manager, session_factory, console_manager)
-    )
-
-    server.status = "starting"
-    record_audit(
-        db,
-        action="server.started",
-        actor=actor,
-        detail=f"Start requested for server '{server.name}'.",
-        meta=meta,
-    )
-    db.commit()
-    db.refresh(server)
+        server.status = "starting"
+        record_audit(
+            db,
+            action="server.started",
+            actor=actor,
+            detail=f"Start requested for server '{server.name}'.",
+            meta=meta,
+        )
+        db.commit()
+        db.refresh(server)
     return server
 
 
@@ -554,34 +556,40 @@ def stop_server(
     process_manager: ProcessManager,
     meta: RequestMeta | None = None,
 ) -> Server:
-    """Stop a running Minecraft server process."""
+    """Stop a running Minecraft server process.
+
+    Stop operations are allowed to proceed even if other operations are in
+    progress (e.g., backup, restore), as they may be needed to terminate
+    a stuck process. Only concurrent stop/delete operations are blocked.
+    """
 
     _check_server_access(server, actor)
 
-    handle = process_manager.get(server.id)
-    if handle is None or not handle.is_running:
-        server.status = "stopped"
-        server.process_id = None
-        server.stopped_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    with acquire_operation_lock(server.id, OperationType.STOP):
+        handle = process_manager.get(server.id)
+        if handle is None or not handle.is_running:
+            server.status = "stopped"
+            server.process_id = None
+            server.stopped_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            db.commit()
+            db.refresh(server)
+            return server
+
+        loop = asyncio.get_event_loop()
+        # Schedule the async stop; we don't block the route handler on it.
+        loop.create_task(_stop_process(process_manager, server.id))
+
+        server.status = "stopping"
+        record_audit(
+            db,
+            action="server.stopped",
+            actor=actor,
+            detail=f"Stop requested for server '{server.name}'.",
+            meta=meta,
+        )
         db.commit()
         db.refresh(server)
         return server
-
-    loop = asyncio.get_event_loop()
-    # Schedule the async stop; we don't block the route handler on it.
-    loop.create_task(_stop_process(process_manager, server.id))
-
-    server.status = "stopping"
-    record_audit(
-        db,
-        action="server.stopped",
-        actor=actor,
-        detail=f"Stop requested for server '{server.name}'.",
-        meta=meta,
-    )
-    db.commit()
-    db.refresh(server)
-    return server
 
 
 def restart_server(
@@ -595,30 +603,35 @@ def restart_server(
     console_manager=None,
     meta: RequestMeta | None = None,
 ) -> Server:
-    """Restart a server: stop then start."""
+    """Restart a server: stop then start.
+
+    The entire restart operation is serialized with other lifecycle and
+    backup operations via the shared operation lock.
+    """
 
     _check_server_access(server, actor)
 
     if server.status not in ("running", "stopped", "error"):
         raise DomainError(f"Cannot restart server in '{server.status}' state.")
 
-    # Stop first if running.
-    if server.status == "running":
-        stop_server(
-            db, server=server, actor=actor,
-            process_manager=process_manager, meta=meta,
-        )
+    with acquire_operation_lock(server.id, OperationType.RESTART):
+        # Stop first if running.
+        if server.status == "running":
+            stop_server(
+                db, server=server, actor=actor,
+                process_manager=process_manager, meta=meta,
+            )
 
-    return start_server(
-        db,
-        server=server,
-        actor=actor,
-        process_manager=process_manager,
-        settings=settings,
-        session_factory=session_factory,
-        console_manager=console_manager,
-        meta=meta,
-    )
+        return start_server(
+            db,
+            server=server,
+            actor=actor,
+            process_manager=process_manager,
+            settings=settings,
+            session_factory=session_factory,
+            console_manager=console_manager,
+            meta=meta,
+        )
 
 
 def capture_log(

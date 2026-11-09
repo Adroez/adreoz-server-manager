@@ -2,8 +2,9 @@
 
 Backups are ``tar.gz`` archives stored in ``data/backups/`` — deliberately
 outside every server's browsable directory. All operations are scoped to a
-single server, validate the resolved paths, and take a per-server lock so a
-backup and a restore can never race each other.
+single server, validate the resolved paths, and use a shared per-server
+operation lock to coordinate with server lifecycle operations (start, stop,
+restart, delete).
 
 Security properties:
 
@@ -26,9 +27,7 @@ import os
 import shutil
 import tarfile
 import tempfile
-import threading
 import uuid
-from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Iterator
@@ -45,11 +44,15 @@ from app.models.setting import AppSetting
 from app.models.user import User
 from app.services.audit import RequestMeta, record_audit
 from app.services.errors import ConflictError, DomainError, ForbiddenError, NotFoundError
+from app.services.operations import OperationType, acquire_operation_lock
 
 logger = logging.getLogger("asm.backups")
 
 # Maximum size of a single backup archive: 4 GB.
 MAX_BACKUP_SIZE = 4 * 1024 * 1024 * 1024
+
+# Maximum expanded size of a backup archive when restored: 8 GB.
+MAX_EXPANDED_BACKUP_SIZE = 8 * 1024 * 1024 * 1024
 
 # Free space kept in reserve while writing an archive.
 FREE_SPACE_MARGIN = 64 * 1024 * 1024
@@ -61,41 +64,6 @@ BACKUP_STATUS_FAILED = "failed"
 
 # Statuses eligible for retention cleanup.
 PRUNABLE_STATUSES = (BACKUP_STATUS_COMPLETED, BACKUP_STATUS_FAILED)
-
-# Per-server operation locks (backup and restore share the same lock).
-_lock_registry_guard = threading.Lock()
-_server_locks: dict[int, threading.Lock] = {}
-
-
-def _lock_for(server_id: int) -> threading.Lock:
-    """Return the process-wide lock for a server ID."""
-
-    with _lock_registry_guard:
-        lock = _server_locks.get(server_id)
-        if lock is None:
-            lock = threading.Lock()
-            _server_locks[server_id] = lock
-        return lock
-
-
-@contextmanager
-def _exclusive_server_lock(server_id: int) -> Iterator[None]:
-    """Take a non-blocking per-server lock.
-
-    A second concurrent backup/restore request receives a clear conflict
-    instead of silently running two archive operations at once.
-    """
-
-    lock = _lock_for(server_id)
-    if not lock.acquire(blocking=False):
-        raise ConflictError(
-            "Another backup or restore operation is already in progress for "
-            "this server. Please wait for it to finish."
-        )
-    try:
-        yield
-    finally:
-        lock.release()
 
 
 def _check_server_access(server: Server, actor: User) -> None:
@@ -252,13 +220,30 @@ def _validate_member(member: tarfile.TarInfo, staging: Path) -> None:
 
 
 def _extract_archive(archive: Path, staging: Path) -> None:
-    """Validate and extract an archive into a staging directory."""
+    """Validate and extract an archive into a staging directory.
+
+    Also calculates and validates the total expanded size before extraction.
+    """
 
     try:
         with tarfile.open(archive, "r:gz") as tar:
             members = tar.getmembers()
+
+            # Calculate total expanded size of regular files.
+            total_size = 0
             for member in members:
                 _validate_member(member, staging)
+                if member.isfile():
+                    if member.size < 0:
+                        raise DomainError("Backup archive contains invalid file sizes.")
+                    total_size += member.size
+
+            if total_size > MAX_EXPANDED_BACKUP_SIZE:
+                raise DomainError(
+                    f"Backup archive exceeds maximum expanded size of "
+                    f"{MAX_EXPANDED_BACKUP_SIZE // (1024**3)} GB."
+                )
+
             # ``filter="data"`` adds defense in depth on Python 3.12+.
             tar.extractall(path=staging, members=members, filter="data")
     except tarfile.TarError as exc:
@@ -401,7 +386,7 @@ def create_backup(
             "The server must be stopped before a backup can be created."
         )
 
-    with _exclusive_server_lock(server.id):
+    with acquire_operation_lock(server.id, OperationType.BACKUP_CREATE):
         # Re-check state after acquiring the lock.
         with session_factory() as db:
             db_server = db.get(Server, server.id)
@@ -580,7 +565,7 @@ def delete_backup(
 
     _check_server_access(server, actor)
 
-    with _exclusive_server_lock(server.id):
+    with acquire_operation_lock(server.id, OperationType.BACKUP_RESTORE):
         with session_factory() as db:
             row = _find_backup(db, server.id, backup_id)
             target = _resolve_backup_path(settings, row.filename)
@@ -642,6 +627,8 @@ def restore_backup(
     The archive is extracted into a staging directory first. Only after every
     member has been validated is the staging tree swapped into the server
     directory. On failure the original server directory is put back.
+
+    Recovery directories are preserved on failure for manual recovery.
     """
 
     _check_server_access(server, actor)
@@ -649,7 +636,7 @@ def restore_backup(
     if server.status != "stopped":
         raise DomainError("The server must be stopped before a backup can be restored.")
 
-    with _exclusive_server_lock(server.id):
+    with acquire_operation_lock(server.id, OperationType.BACKUP_RESTORE):
         with session_factory() as db:
             db_server = db.get(Server, server.id)
             if db_server is None:
@@ -678,8 +665,21 @@ def restore_backup(
         old_dir = server_dir.parent / f".asm-old-{server.id}-{uuid.uuid4().hex}"
         moved_old = False
         staging_moved = False
+        rollback_succeeded = False
+        rollback_failed = False
 
         try:
+            # Check available disk space before extraction.
+            try:
+                free = shutil.disk_usage(server_dir.parent).free
+                required = FREE_SPACE_MARGIN
+                if free < required:
+                    raise DomainError(
+                        "Insufficient disk space to restore this backup."
+                    )
+            except OSError:
+                pass
+
             _extract_archive(archive, staging)
 
             if server_dir.exists():
@@ -714,23 +714,57 @@ def restore_backup(
         except Exception as exc:  # noqa: BLE001 - converted to a safe domain error
             # Roll back a partially swapped restore.
             if staging_moved and server_dir.exists():
-                shutil.rmtree(server_dir, ignore_errors=True)
+                try:
+                    shutil.rmtree(server_dir, ignore_errors=True)
+                except OSError:
+                    logger.exception("Failed to remove failed restore directory")
+
             if moved_old and old_dir.exists():
                 try:
                     os.replace(old_dir, server_dir)
+                    rollback_succeeded = True
                 except OSError:
-                    logger.exception("Failed to roll back server directory")
+                    rollback_failed = True
+                    logger.exception(
+                        "CRITICAL: Rollback failed for server %s. "
+                        "Original server directory preserved at: %s",
+                        server.id,
+                        old_dir,
+                    )
 
-            logger.exception("Restore failed for server %s", server.id)
+            # Log recovery directory locations for manual recovery.
+            if not rollback_succeeded:
+                logger.error(
+                    "Restore failed for server %s. Staging directory: %s. "
+                    "Original data directory: %s. "
+                    "Error: %s",
+                    server.id,
+                    staging if staging.exists() else "removed",
+                    old_dir if moved_old and old_dir.exists() else "unknown",
+                    exc,
+                )
+
             if isinstance(exc, DomainError):
                 raise
             raise DomainError(_sanitize_error(exc)) from exc
 
         finally:
-            if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
-            if old_dir.exists():
-                shutil.rmtree(old_dir, ignore_errors=True)
+            # Only clean up if rollback succeeded AND we're not in a failure state
+            # where we need to preserve recovery data.
+            if rollback_succeeded and not rollback_failed:
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
+                if old_dir.exists():
+                    shutil.rmtree(old_dir, ignore_errors=True)
+            else:
+                # Preserve recovery directories for manual intervention.
+                logger.warning(
+                    "Recovery directories preserved for server %s: "
+                    "staging=%s old_dir=%s",
+                    server.id,
+                    staging if staging.exists() else "removed",
+                    old_dir if old_dir.exists() else "removed",
+                )
 
 
 def run_backup_scheduler_once(

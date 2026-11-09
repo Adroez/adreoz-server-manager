@@ -336,3 +336,29 @@ backup and a specific reason; Phase 1 ships one initial revision.
 - [ ] Proxy rate limiting and, if possible, an IP allowlist/VPN are enabled.
 - [ ] `journalctl` and failed-login audit entries are reviewed.
 - [ ] Dependencies and the host are patched on a schedule.
+
+## 14. Single-process coordination limitation
+
+The panel uses in-memory, per-server locks to coordinate server lifecycle
+operations (start, stop, restart, delete) with backup and restore operations.
+This coordination is **only safe when running a single Uvicorn worker**.
+
+Running multiple Uvicorn workers (or multiple panel instances) **will break**
+the operation coordination, allowing conflicting operations to run concurrently.
+For example, two workers could simultaneously:
+- Start a server while a backup is running on another worker.
+- Delete a server while a restore is in progress on another worker.
+- Run two backups concurrently for the same server.
+
+To run multiple workers safely, you would need external coordination such as:
+- PostgreSQL advisory locks.
+- Redis-based distributed locks.
+- A shared filesystem with file-based locking (e.g., `flock` on NFS).
+
+Until such coordination is implemented, **deploy with exactly one Uvicorn
+worker** (the default in the provided systemd unit). If you need horizontal
+scaling, run a single panel instance behind a load balancer and scale the
+Minecraft servers themselves, not the panel.
+
+The rate limiting in Phase 1 has the same single-process limitation and is
+also not safe for multi-worker deployments without external coordination.

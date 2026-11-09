@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import io
+import os
 import tarfile
 from pathlib import Path
 
@@ -14,9 +15,9 @@ from app.models.audit import AuditLog
 from app.models.backup import ServerBackup
 from app.models.server import Server
 from app.services.backup import (
-    _lock_for,
     run_backup_scheduler_once,
 )
+from app.services.operations import _get_lock
 from tests.conftest import ADMIN_LOGIN, PLAYER_PASSWORD, csrf_headers
 
 
@@ -499,7 +500,7 @@ def test_backup_concurrent_operation_conflict(
     server = _setup_player_and_server(client, "backupowner", "concurrent-server", 25718)
     server_id = server["id"]
 
-    lock = _lock_for(server_id)
+    lock = _get_lock(server_id)
     assert lock.acquire(blocking=False)
     try:
         response = client.post(
@@ -648,3 +649,273 @@ def test_backup_actions_are_audited(client: TestClient, admin_ready: dict, app) 
     assert "backup.created" in actions
     assert "backup.restored" in actions
     assert "backup.deleted" in actions
+
+
+# ---------------------------------------------------------------------------
+# Restore rollback data preservation regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_restore_failure_before_move_preserves_original(
+    client: TestClient, admin_ready: dict, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failure before moving original directory: original should be untouched."""
+    server = _setup_player_and_server(client, "backupowner", "restore-fail-before", 25800)
+    server_id = server["id"]
+    _write_file(client, server_id, "important.txt", "original-content")
+    backup = _create_backup(client, server_id)
+
+    # Corrupt the archive so extraction fails before any move happens.
+    _archive_path(app, backup).write_bytes(b"not a valid tar.gz")
+
+    response = client.post(
+        f"/api/servers/{server_id}/backups/{backup['id']}/restore",
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 400
+    assert "corrupted" in response.json()["detail"].lower()
+
+    # Original file should still exist with original content.
+    assert _read_file(client, server_id, "important.txt") == "original-content"
+
+
+def test_restore_failure_after_move_original_preserved(
+    client: TestClient, admin_ready: dict, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failure after moving original: rollback should restore original."""
+    server = _setup_player_and_server(client, "backupowner", "restore-fail-after", 25801)
+    server_id = server["id"]
+    _write_file(client, server_id, "important.txt", "original-content")
+    backup = _create_backup(client, server_id)
+
+    # Create a valid archive but make the second os.replace fail.
+    original_replace = os.replace
+    replace_call_count = [0]
+
+    def failing_replace(src, dst):
+        replace_call_count[0] += 1
+        # Second replace call moves staging to server_dir - fail that one.
+        if replace_call_count[0] == 2:
+            raise OSError("Simulated move failure")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    response = client.post(
+        f"/api/servers/{server_id}/backups/{backup['id']}/restore",
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 400
+
+    # Original file should be restored with original content.
+    assert _read_file(client, server_id, "important.txt") == "original-content"
+
+
+def test_restore_failure_during_rollback_preserves_recovery_dirs(
+    client: TestClient, admin_ready: dict, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failure during rollback: both staging and old_dir should be preserved."""
+    server = _setup_player_and_server(client, "backupowner", "restore-rollback-fail", 25802)
+    server_id = server["id"]
+    _write_file(client, server_id, "important.txt", "original-content")
+    backup = _create_backup(client, server_id)
+
+    # Make the restore move fail, then rollback also fail.
+    original_replace = os.replace
+    replace_call_count = [0]
+
+    def failing_replace(src, dst):
+        replace_call_count[0] += 1
+        # Call 1: move server_dir to old_dir (succeed)
+        # Call 2: move staging to server_dir (FAIL - restore fails)
+        # Call 3: rollback - move old_dir back to server_dir (FAIL - rollback fails)
+        if replace_call_count[0] in (2, 3):
+            raise OSError("Simulated move failure")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    response = client.post(
+        f"/api/servers/{server_id}/backups/{backup['id']}/restore",
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 400
+
+    # Check that recovery directories exist (they won't be cleaned up on rollback failure).
+    server_dir = Path(server["directory"])
+    old_dirs = list(server_dir.parent.glob(f".asm-old-{server_id}-*"))
+    restore_dirs = list(server_dir.parent.glob(".asm-restore-*"))
+    # At least one recovery directory should exist.
+    assert len(old_dirs) + len(restore_dirs) > 0
+
+
+def test_restore_successful_rollback_restores_original(
+    client: TestClient, admin_ready: dict, app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Successful rollback: original directory is restored correctly."""
+    server = _setup_player_and_server(client, "backupowner", "restore-rollback-ok", 25803)
+    server_id = server["id"]
+    _write_file(client, server_id, "important.txt", "original-content")
+    backup = _create_backup(client, server_id)
+
+    # Make the restore's second os.replace fail, but rollback succeeds.
+    original_replace = os.replace
+    replace_call_count = [0]
+
+    def fail_second_replace(src, dst):
+        replace_call_count[0] += 1
+        # Second call: move staging to server_dir - fail this one
+        if replace_call_count[0] == 2:
+            raise OSError("Simulated restore move failure")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_second_replace)
+
+    response = client.post(
+        f"/api/servers/{server_id}/backups/{backup['id']}/restore",
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 400
+
+    # Original file should be restored.
+    assert _read_file(client, server_id, "important.txt") == "original-content"
+
+
+def test_restore_successful_restore_and_cleanup(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    """Successful restore: temporary directories are cleaned up."""
+    server = _setup_player_and_server(client, "backupowner", "restore-success", 25804)
+    server_id = server["id"]
+    _write_file(client, server_id, "important.txt", "original-content")
+    backup = _create_backup(client, server_id)
+
+    _write_file(client, server_id, "important.txt", "modified-content")
+
+    response = client.post(
+        f"/api/servers/{server_id}/backups/{backup['id']}/restore",
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 200
+
+    # Original content should be restored.
+    assert _read_file(client, server_id, "important.txt") == "original-content"
+
+    # No temporary directories should remain.
+    server_dir = Path(server["directory"])
+    old_dirs = list(server_dir.parent.glob(f".asm-old-{server_id}-*"))
+    restore_dirs = list(server_dir.parent.glob(".asm-restore-*"))
+    assert len(old_dirs) == 0
+    assert len(restore_dirs) == 0
+
+
+def test_restore_preserves_archive_on_failure(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    """Failed restore: backup archive is preserved."""
+    server = _setup_player_and_server(client, "backupowner", "restore-preserve-archive", 25805)
+    server_id = server["id"]
+    _write_file(client, server_id, "keep.txt", "content")
+    backup = _create_backup(client, server_id)
+    archive = _archive_path(app, backup)
+
+    # Corrupt the archive.
+    archive.write_bytes(b"corrupted")
+
+    response = client.post(
+        f"/api/servers/{server_id}/backups/{backup['id']}/restore",
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 400
+
+    # Archive should still exist (though corrupted).
+    assert archive.exists()
+
+
+def test_concurrent_backup_and_start_blocked(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    """Starting a server while backup is running should return 409."""
+    server = _setup_player_and_server(client, "backupowner", "concurrent-start", 25806)
+    server_id = server["id"]
+
+    # Manually acquire the operation lock for BACKUP_CREATE.
+    from app.services.operations import acquire_operation_lock, OperationType
+
+    lock = acquire_operation_lock(server_id, OperationType.BACKUP_CREATE)
+    lock.__enter__()
+    try:
+        # Try to start the server - should get 409.
+        response = client.post(
+            f"/api/servers/{server_id}/start", headers=csrf_headers(client)
+        )
+        assert response.status_code == 409
+        assert "busy" in response.json()["detail"].lower()
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_concurrent_backup_and_delete_blocked(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    """Deleting a server while backup is running should return 409."""
+    server = _setup_player_and_server(client, "backupowner", "concurrent-delete", 25807)
+    server_id = server["id"]
+
+    from app.services.operations import acquire_operation_lock, OperationType
+
+    lock = acquire_operation_lock(server_id, OperationType.BACKUP_CREATE)
+    lock.__enter__()
+    try:
+        response = client.delete(
+            f"/api/servers/{server_id}", headers=csrf_headers(client)
+        )
+        assert response.status_code == 409
+        assert "busy" in response.json()["detail"].lower()
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_concurrent_restore_and_start_blocked(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    """Starting a server while restore is running should return 409."""
+    server = _setup_player_and_server(client, "backupowner", "concurrent-restore-start", 25808)
+    server_id = server["id"]
+    _write_file(client, server_id, "keep.txt", "content")
+    backup = _create_backup(client, server_id)
+
+    from app.services.operations import acquire_operation_lock, OperationType
+
+    lock = acquire_operation_lock(server_id, OperationType.BACKUP_RESTORE)
+    lock.__enter__()
+    try:
+        response = client.post(
+            f"/api/servers/{server_id}/start", headers=csrf_headers(client)
+        )
+        assert response.status_code == 409
+        assert "busy" in response.json()["detail"].lower()
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def test_stop_allowed_during_backup(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    """Stop should be allowed even during backup (different lock class)."""
+    server = _setup_player_and_server(client, "backupowner", "stop-during-backup", 25809)
+    server_id = server["id"]
+    _set_server_status(app, server_id, "running")
+
+    from app.services.operations import acquire_operation_lock, OperationType
+
+    lock = acquire_operation_lock(server_id, OperationType.BACKUP_CREATE)
+    lock.__enter__()
+    try:
+        # Stop should succeed (STOP doesn't conflict with BACKUP_CREATE).
+        response = client.post(
+            f"/api/servers/{server_id}/stop", headers=csrf_headers(client)
+        )
+        assert response.status_code == 200
+    finally:
+        lock.__exit__(None, None, None)

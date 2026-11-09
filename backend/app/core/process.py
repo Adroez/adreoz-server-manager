@@ -4,6 +4,10 @@ Servers are launched as child processes of the panel. The panel tracks each
 running process in memory and captures stdout/stderr into the database. No
 shell interpolation is ever used: the Java executable and its arguments are
 passed as a list, preventing command injection.
+
+Exactly one reader task per stream (stdout/stderr) is created by
+ProcessManager.register. The callbacks handle database persistence and
+WebSocket broadcasting.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import os
 import signal
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 logger = logging.getLogger("asm.process")
 
@@ -50,6 +54,8 @@ class ProcessManager:
     The panel is single-process in Phase 2, so an in-memory registry keyed by
     server ID is sufficient. Each process is an asyncio subprocess whose
     output is captured line by line and forwarded to an optional callback.
+
+    Exactly one reader task per stream is created per process.
     """
 
     def __init__(self) -> None:
@@ -72,34 +78,46 @@ class ProcessManager:
         self,
         server_id: int,
         process: asyncio.subprocess.Process,
-        stdout_callback: Callable[[str], None] | None = None,
-        stderr_callback: Callable[[str], None] | None = None,
+        output_callback: Callable[[int, str, str], None] | None = None,
     ) -> ProcessHandle:
+        """Register a process with a single output callback.
+
+        Args:
+            server_id: The server ID.
+            process: The asyncio subprocess.
+            output_callback: Called as callback(server_id, stream_name, line)
+                for each line of output. stream_name is "stdout" or "stderr".
+                If None, output is only logged.
+
+        Returns:
+            The ProcessHandle for the registered process.
+        """
         if self.has(server_id):
             raise ProcessError(f"Server {server_id} already has a tracked process.")
 
         handle = ProcessHandle(server_id=server_id, process=process)
         self._processes[server_id] = handle
 
-        async def pump(stream, callback, tag: str) -> None:
+        async def pump(stream, stream_name: str) -> None:
             assert stream is not None
             while True:
                 line = await stream.readline()
                 if not line:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip("\n")
-                if callback:
-                    try:
-                        callback(text)
-                    except Exception:  # pragma: no cover - callback resilience
-                        logger.exception("Process output callback failed for server %s", server_id)
+                if text:
+                    if output_callback:
+                        try:
+                            output_callback(server_id, stream_name, text)
+                        except Exception:  # pragma: no cover - callback resilience
+                            logger.exception(
+                                "Process output callback failed for server %s", server_id
+                            )
+                    else:
+                        logger.debug("[server %s %s] %s", server_id, stream_name, text)
 
-        handle.stdout_task = asyncio.create_task(
-            pump(process.stdout, stdout_callback, "stdout")
-        )
-        handle.stderr_task = asyncio.create_task(
-            pump(process.stderr, stderr_callback, "stderr")
-        )
+        handle.stdout_task = asyncio.create_task(pump(process.stdout, "stdout"))
+        handle.stderr_task = asyncio.create_task(pump(process.stderr, "stderr"))
         handle.started_at = asyncio.get_event_loop().time()
         logger.info("Registered process for server %s (pid=%s)", server_id, process.pid)
         return handle
@@ -144,6 +162,12 @@ class ProcessManager:
         for task in (handle.stdout_task, handle.stderr_task):
             if task is not None and not task.done():
                 task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # pragma: no cover
+                    logger.exception("Pump task raised during cancellation for server %s", server_id)
 
         logger.info(
             "Stopped server %s (pid=%s, exit_code=%s)",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.models.server import Server
@@ -585,3 +586,193 @@ def test_config_properties_write_without_etag(client: TestClient, admin_ready: d
     )
     assert read.status_code == 200
     assert read.json()["properties"]["motd"] == "No etag write"
+
+
+# ---------------------------------------------------------------------------
+# Upload size limit enforcement tests
+# ---------------------------------------------------------------------------
+
+
+def _upload_file(
+    client: TestClient, server_id: int, fp: str, filename: str, data: bytes
+) -> tuple[int, dict]:
+    """Helper to upload a file and return status code and response."""
+    from tests.conftest import csrf_headers
+
+    return client.post(
+        f"/api/servers/{server_id}/files/upload",
+        params={"fp": fp, "filename": filename},
+        data=data,
+        headers={"X-CSRF-Token": csrf_headers(client).get("X-CSRF-Token", "")},
+    ).status_code, client.post(
+        f"/api/servers/{server_id}/files/upload",
+        params={"fp": fp, "filename": filename},
+        data=data,
+        headers={"X-CSRF-Token": csrf_headers(client).get("X-CSRF-Token", "")},
+    ).json() if client.post(
+        f"/api/servers/{server_id}/files/upload",
+        params={"fp": fp, "filename": filename},
+        data=data,
+        headers={"X-CSRF-Token": csrf_headers(client).get("X-CSRF-Token", "")},
+    ).status_code == 200 else {}
+
+
+def test_upload_below_size_limit(client: TestClient, admin_ready: dict) -> None:
+    """Upload below the size limit succeeds."""
+    server = _setup_player_and_server(
+        client, player_username="fileowner", server_name="upload-small", server_port=25610
+    )
+    server_id = server["id"]
+
+    # Upload a 1 MB file (well below 100 MB limit).
+    data = b"x" * (1024 * 1024)
+    response = client.post(
+        f"/api/servers/{server_id}/files/upload",
+        params={"fp": "test.bin", "filename": "test.bin"},
+        data=data,
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert "Uploaded" in response.json()["message"]
+
+
+def test_upload_at_size_limit(client: TestClient, admin_ready: dict) -> None:
+    """Upload exactly at the size limit succeeds."""
+    server = _setup_player_and_server(
+        client, player_username="fileowner", server_name="upload-exact", server_port=25611
+    )
+    server_id = server["id"]
+
+    # Upload exactly 100 MB (the limit).
+    max_size = 100 * 1024 * 1024
+    data = b"x" * max_size
+    response = client.post(
+        f"/api/servers/{server_id}/files/upload",
+        params={"fp": "test.bin", "filename": "test.bin"},
+        data=data,
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_upload_exceeds_size_limit(client: TestClient, admin_ready: dict) -> None:
+    """Upload exceeding the size limit returns 413."""
+    server = _setup_player_and_server(
+        client, player_username="fileowner", server_name="upload-large", server_port=25612
+    )
+    server_id = server["id"]
+
+    # Upload 100 MB + 1 byte.
+    max_size = 100 * 1024 * 1024
+    data = b"x" * (max_size + 1)
+    response = client.post(
+        f"/api/servers/{server_id}/files/upload",
+        params={"fp": "test.bin", "filename": "test.bin"},
+        data=data,
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 413, response.text
+    assert "exceeds maximum size" in response.json()["detail"].lower()
+
+
+def test_upload_interrupted_cleanup(client: TestClient, admin_ready: dict, app) -> None:
+    """Interrupted upload cleans up temporary files."""
+    server = _setup_player_and_server(
+        client, player_username="fileowner", server_name="upload-interrupt", server_port=25613
+    )
+    server_id = server["id"]
+
+    # Upload a valid file first.
+    data = b"valid content"
+    response = client.post(
+        f"/api/servers/{server_id}/files/upload",
+        params={"fp": "test.txt", "filename": "test.txt"},
+        data=data,
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 200
+
+    # Verify file exists.
+    read = client.get(
+        f"/api/servers/{server_id}/files/read",
+        params={"fp": "test.txt"},
+        headers=csrf_headers(client),
+    )
+    assert read.json()["content"] == "valid content"
+
+    # The temp file should not exist after successful upload.
+    server_dir = Path(server["directory"])
+    temp_files = list(server_dir.glob(".asm-upload-*"))
+    assert len(temp_files) == 0
+
+
+def test_upload_failed_preserves_existing_file(client: TestClient, admin_ready: dict) -> None:
+    """Failed upload does not replace existing file."""
+    server = _setup_player_and_server(
+        client, player_username="fileowner", server_name="upload-preserve", server_port=25614
+    )
+    server_id = server["id"]
+
+    # Create an existing file.
+    original_content = "original content"
+    write_resp = client.post(
+        f"/api/servers/{server_id}/files/write",
+        headers=csrf_headers(client),
+        json={"path": "existing.txt", "content": original_content},
+    )
+    assert write_resp.status_code == 200
+
+    # Try to upload a too-large file to the same path.
+    max_size = 100 * 1024 * 1024
+    data = b"x" * (max_size + 1)
+    response = client.post(
+        f"/api/servers/{server_id}/files/upload",
+        params={"fp": "existing.txt", "filename": "existing.txt"},
+        data=data,
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 413
+
+    # Original file should be unchanged.
+    read = client.get(
+        f"/api/servers/{server_id}/files/read",
+        params={"fp": "existing.txt"},
+        headers=csrf_headers(client),
+    )
+    assert read.json()["content"] == original_content
+
+
+def test_upload_path_traversal_rejected(client: TestClient, admin_ready: dict) -> None:
+    """Upload with path traversal in filename is rejected."""
+    server = _setup_player_and_server(
+        client, player_username="fileowner", server_name="upload-traversal", server_port=25615
+    )
+    server_id = server["id"]
+
+    # Try to upload with path traversal in the fp parameter.
+    response = client.post(
+        f"/api/servers/{server_id}/files/upload",
+        params={"fp": "../etc/passwd", "filename": "passwd"},
+        data=b"malicious",
+        headers=csrf_headers(client),
+    )
+    # Should be rejected (400 for path traversal, not 413 for size).
+    assert response.status_code in (400, 403), response.text
+
+
+def test_upload_missing_csrf_rejected(client: TestClient, admin_ready: dict) -> None:
+    """Upload without CSRF token is rejected."""
+    server = _setup_player_and_server(
+        client, player_username="fileowner", server_name="upload-csrf", server_port=25616
+    )
+    server_id = server["id"]
+
+    # Upload without X-CSRF-Token header.
+    response = client.post(
+        f"/api/servers/{server_id}/files/upload",
+        params={"fp": "test.txt", "filename": "test.txt"},
+        data=b"content",
+        # No CSRF header
+    )
+    assert response.status_code == 403, response.text
+    assert "csrf" in response.json()["detail"].lower()

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import AuthContext, get_current_auth, get_db, get_settings
+from app.api.deps import AuthContext, get_current_auth, get_db, get_settings, require_csrf
 from app.core.config import Settings
 from app.models.server import Server
 from app.schemas.files import (
@@ -40,6 +40,7 @@ from app.services.files import (
     save_uploaded_file,
     write_file,
     _resolve_file_path,
+    MAX_UPLOAD_SIZE,
 )
 from app.services.servers import get_server_or_404
 
@@ -128,7 +129,7 @@ def write_file_endpoint(
     server_id: int,
     payload: FileWriteRequest,
     request: Request,
-    auth: Annotated[AuthContext, Depends(get_current_auth)],
+    auth: Annotated[AuthContext, Depends(require_csrf)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(_get_settings)],
 ) -> FileActionResponse:
@@ -169,7 +170,7 @@ def create_folder_endpoint(
     server_id: int,
     payload: FolderCreateRequest,
     request: Request,
-    auth: Annotated[AuthContext, Depends(get_current_auth)],
+    auth: Annotated[AuthContext, Depends(require_csrf)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(_get_settings)],
 ) -> FileActionResponse:
@@ -209,7 +210,7 @@ def rename_file_endpoint(
     server_id: int,
     payload: FileRenameRequest,
     request: Request,
-    auth: Annotated[AuthContext, Depends(get_current_auth)],
+    auth: Annotated[AuthContext, Depends(require_csrf)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(_get_settings)],
 ) -> FileActionResponse:
@@ -250,7 +251,7 @@ def delete_file_endpoint(
     server_id: int,
     payload: FileDeleteRequest,
     request: Request,
-    auth: Annotated[AuthContext, Depends(get_current_auth)],
+    auth: Annotated[AuthContext, Depends(require_csrf)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(_get_settings)],
 ) -> FileActionResponse:
@@ -330,7 +331,7 @@ def download_file_endpoint(
 async def upload_file_endpoint(
     server_id: int,
     request: Request,
-    auth: Annotated[AuthContext, Depends(get_current_auth)],
+    auth: Annotated[AuthContext, Depends(require_csrf)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(_get_settings)],
     fp: str = Query(..., min_length=1),
@@ -340,14 +341,23 @@ async def upload_file_endpoint(
     _check_server_ownership(server, auth)
     meta = request_meta(request)
 
-    body = await request.body()
+    # Stream the request body with a size limit to avoid buffering unlimited data.
+    max_size = MAX_UPLOAD_SIZE
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > max_size:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Uploaded file exceeds maximum size of {max_size // (1024 * 1024)} MB.",
+            )
 
     save_uploaded_file(
         settings,
         server,
         actor=auth.user,
         relative_path=fp,
-        file_data=body,
+        file_data=bytes(body),
         filename=filename,
     )
 
@@ -400,7 +410,7 @@ def write_properties_endpoint(
     server_id: int,
     payload: ConfigPropertiesUpdateRequest,
     request: Request,
-    auth: Annotated[AuthContext, Depends(get_current_auth)],
+    auth: Annotated[AuthContext, Depends(require_csrf)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(_get_settings)],
 ) -> ConfigPropertiesResponse:
