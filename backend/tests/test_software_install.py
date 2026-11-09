@@ -328,3 +328,125 @@ def test_minecraft_version_service_get_metadata(tmp_path):
         metadata = service.get_version_metadata("1.20.1")
         assert metadata["id"] == "1.20.1"
         assert metadata["java_version_major"] == 17
+
+
+# ----------------------------------------------------------------------
+# PaperMC Fill API tests (mocked)
+# ------------------------------------------------------------------
+
+
+def test_paper_metadata_parses_fill_v3_response():
+    """Paper metadata extracts server:default URL and SHA-256 from Fill v3."""
+    installer = SoftwareInstaller()
+
+    fill_response = {
+        "id": 196,
+        "time": "2023-09-21T16:59:41.322Z",
+        "channel": "STABLE",
+        "downloads": {
+            "server:default": {
+                "name": "paper-1.20.1-196.jar",
+                "checksums": {
+                    "sha256": "234a9b32098100c6fc116664d64e36ccdb58b5b649af0f80bcccb08b0255eaea"
+                },
+                "size": 43230582,
+                "url": "https://fill-data.papermc.io/v1/objects/234a9b32098100c6fc116664d64e36ccdb58b5b649af0f80bcccb08b0255eaea/paper-1.20.1-196.jar",
+            }
+        },
+    }
+
+    with patch.object(
+        installer, "_fetch_json", return_value=fill_response
+    ):
+        info = installer.get_paper_metadata("1.20.1", "196")
+
+    assert info.version == "1.20.1"
+    assert info.build == "196"
+    assert info.download_url == (
+        "https://fill-data.papermc.io/v1/objects/234a9b32098100c6fc116664d64e36ccdb58b5b649af0f80bcccb08b0255eaea/"
+        "paper-1.20.1-196.jar"
+    )
+    assert info.sha256 == "234a9b32098100c6fc116664d64e36ccdb58b5b649af0f80bcccb08b0255eaea"
+    assert info.size == 43230582
+    assert info.filename == "paper-1.20.1-196.jar"
+
+
+def test_paper_metadata_http_404():
+    """Paper metadata raises SoftwareDownloadError on HTTP 404."""
+    from urllib.error import HTTPError
+
+    installer = SoftwareInstaller()
+
+    with patch.object(installer, "_fetch_json") as mock_fetch:
+        mock_fetch.side_effect = HTTPError(
+            "https://fill.papermc.io/v3/projects/paper/versions/1.20.1/builds/999999",
+            404,
+            "Not Found",
+            {},
+            None,
+        )
+        try:
+            installer.get_paper_metadata("1.20.1", "999999")
+            assert False, "Expected SoftwareDownloadError"
+        except Exception as exc:
+            assert "404" in str(exc)
+
+
+def test_paper_versions_list():
+    """Paper versions extracts version IDs from Fill v3 list format."""
+    installer = SoftwareInstaller()
+
+    fill_response = {
+        "project": {"id": "paper", "name": "Paper"},
+        "versions": [
+            {
+                "version": {"id": "1.20.1"},
+                "builds": [1, 2, 3],
+            },
+            {
+                "version": {"id": "1.21"},
+                "builds": [1, 2],
+            },
+        ],
+    }
+
+    with patch.object(installer, "_fetch_json", return_value=fill_response):
+        versions = installer.get_paper_versions()
+
+    version_ids = [v.id for v in versions]
+    assert "1.20.1" in version_ids
+    assert "1.21" in version_ids
+
+
+def test_paper_builds_list():
+    """Paper builds extracts build numbers from Fill v3 array."""
+    installer = SoftwareInstaller()
+
+    fill_response = [
+        {"id": 196, "time": "2023-09-21T16:59:41.322Z", "channel": "STABLE"},
+        {"id": 195, "time": "2023-09-21T08:44:44.132Z", "channel": "STABLE"},
+    ]
+
+    with patch.object(installer, "_fetch_json", return_value=fill_response):
+        builds = installer.get_paper_builds("1.20.1")
+
+    build_ids = [b.id for b in builds]
+    assert "196" in build_ids
+    assert "195" in build_ids
+
+
+def test_paper_metadata_missing_server_default():
+    """Paper metadata raises error when server:default is missing."""
+    installer = SoftwareInstaller()
+
+    fill_response = {
+        "id": 196,
+        "downloads": {},
+    }
+
+    with patch.object(installer, "_fetch_json", return_value=fill_response):
+        try:
+            installer.get_paper_metadata("1.20.1", "196")
+            assert False, "Expected SoftwareDownloadError"
+        except Exception as exc:
+            assert "no server:default" in str(exc).lower()

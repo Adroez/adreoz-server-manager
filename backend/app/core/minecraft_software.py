@@ -74,6 +74,43 @@ class SoftwareInstaller:
         self.timeout_seconds = timeout_seconds
 
     # ------------------------------------------------------------------
+    # HTTP helpers
+    # ------------------------------------------------------------------
+
+    def _fetch_json(self, url: str) -> dict:
+        """Fetch and parse a JSON response from a URL.
+
+        Includes the identifying User-Agent header required by providers.
+        """
+        import json
+        import urllib.request
+        from urllib.error import HTTPError, URLError
+
+        try:
+            request = Request(
+                url,
+                headers={
+                    "User-Agent": "Adreoz-Server-Manager/0.1.0",
+                    "Accept": "application/json",
+                },
+            )
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise SoftwareDownloadError(
+                f"HTTP {exc.code} for {url}."
+            ) from exc
+        except URLError as exc:
+            raise SoftwareDownloadError(
+                f"Unable to reach {url}."
+            ) from exc
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Unexpected error fetching JSON from %s", url)
+            raise SoftwareDownloadError(
+                f"Failed to fetch JSON from {url}."
+            ) from exc
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -102,18 +139,45 @@ class SoftwareInstaller:
         )
 
     def get_paper_metadata(self, version: str, build: str) -> SoftwareDownloadInfo:
-        """Fetch PaperMC metadata for a specific version and build.
+        """Fetch PaperMC metadata via the official Fill v3 API.
 
-        The PaperMC download API (api.papermc.io) has been retired. Paper
-        server JARs must be obtained manually from the PaperMC website or
-        alternative mirrors. This method raises a clear error explaining the
-        situation rather than inventing URLs.
+        Uses https://fill.papermc.io/v3/projects/paper/versions/{version}/builds/{build}
+        and returns the download URL and SHA-256 checksum published by the API.
+        Download URLs are taken directly from the API response and are never
+        constructed manually.
         """
-        raise SoftwareDownloadError(
-            "PaperMC download API has been retired and is no longer available. "
-            "Paper server software must be installed manually: download the "
-            "Paper JAR from https://papermc.io/downloads and place it in the "
-            "server directory as server.jar."
+        url = (
+            f"https://fill.papermc.io/v3/projects/paper/versions/"
+            f"{version}/builds/{build}"
+        )
+
+        try:
+            data = self._fetch_json(url)
+        except SoftwareDownloadError:
+            raise
+
+        downloads = data.get("downloads", {})
+        server_default = downloads.get("server:default", {})
+        download_url = server_default.get("url")
+        sha256 = server_default.get("checksums", {}).get("sha256")
+        size = server_default.get("size")
+        filename = server_default.get(
+            "name", f"paper-{version}-{build}.jar"
+        )
+
+        if not download_url:
+            raise SoftwareDownloadError(
+                f"PaperMC version {version} build {build} has no server:default "
+                "download URL in Fill API response."
+            )
+
+        return SoftwareDownloadInfo(
+            version=version,
+            build=str(build),
+            download_url=download_url,
+            sha256=sha256,
+            size=size,
+            filename=filename,
         )
 
     def get_fabric_metadata(self, version: str, loader_version: str) -> SoftwareDownloadInfo:
@@ -288,6 +352,8 @@ class SoftwareInstaller:
             "download.mojang.com",
             "api.papermc.io",
             "repo.papermc.io",
+            "fill.papermc.io",
+            "fill-data.papermc.io",
             "meta.fabricmc.net",
             "maven.fabricmc.net",
             "maven.minecraftforge.net",
@@ -425,15 +491,35 @@ class SoftwareInstaller:
         ]
 
     def get_paper_versions(self) -> list[SoftwareVersionInfo]:
-        """Return available Paper versions from the PaperMC API.
+        """Return available Paper versions from the Fill v3 API.
 
-        The PaperMC download API has been retired. Returns an empty list with
-        a logged warning so callers can degrade gracefully.
+        Uses https://fill.papermc.io/v3/projects/paper/versions which returns
+        a list of version objects, each with a version.id field.
         """
-        logger.warning(
-            "PaperMC versions API is retired; no Paper versions available."
-        )
-        return []
+        url = "https://fill.papermc.io/v3/projects/paper/versions"
+
+        try:
+            data = self._fetch_json(url)
+        except SoftwareDownloadError:
+            raise
+
+        versions_list = data.get("versions", [])
+        versions: list[str] = []
+        if isinstance(versions_list, list):
+            for entry in versions_list:
+                if isinstance(entry, dict):
+                    version_id = entry.get("version", {}).get("id", "")
+                    if version_id:
+                        versions.append(version_id)
+
+        return [
+            SoftwareVersionInfo(
+                id=v,
+                type="release",
+                release_time=None,
+            )
+            for v in versions
+        ]
 
     def get_fabric_versions(self) -> list[SoftwareVersionInfo]:
         """Return available Fabric versions from the Fabric Meta API."""
@@ -523,15 +609,29 @@ class SoftwareInstaller:
     # ------------------------------------------------------------------
 
     def get_paper_builds(self, version: str) -> list[SoftwareBuildInfo]:
-        """Return available Paper builds for a version.
+        """Return available Paper builds for a version from the Fill v3 API.
 
-        The PaperMC download API has been retired. Returns an empty list.
+        Uses https://fill.papermc.io/v3/projects/paper/versions/{version}/builds
+        which returns an array of build objects.
         """
-        logger.warning(
-            "PaperMC builds API is retired; no Paper builds available for %s.",
-            version,
+        url = (
+            f"https://fill.papermc.io/v3/projects/paper/versions/"
+            f"{version}/builds"
         )
-        return []
+
+        try:
+            data = self._fetch_json(url)
+        except SoftwareDownloadError:
+            raise
+
+        builds = data if isinstance(data, list) else []
+        return [
+            SoftwareBuildInfo(
+                id=str(b.get("id", "")),
+                time=b.get("time"),
+            )
+            for b in builds
+        ]
 
     def get_fabric_loader_versions(self, version: str) -> list[SoftwareBuildInfo]:
         """Return available Fabric loader versions for a Minecraft version."""
