@@ -60,6 +60,8 @@ export async function renderUsers(view, ctx) {
 
   const searchInput = el("input", {
     class: "input",
+    id: "users-search",
+    name: "search",
     type: "search",
     placeholder: "Search users…",
     attrs: { "aria-label": "Search users", autocomplete: "off" },

@@ -390,4 +390,6 @@ window.addEventListener("unhandledrejection", (event) => {
   console.error("Unhandled promise rejection", event.reason);
 });
 
+export { normalizePath, resolveRoute };
+
 boot();

@@ -29,7 +29,10 @@ export function renderShell({ root, routes, user, onLogout }) {
         "a",
         {
           class: "nav-link",
-          attrs: { href: `#${route.path}`, "data-path": route.path },
+          attrs: {
+            href: route.path === "/servers/console" ? "#/servers" : `#${route.path}`,
+            "data-path": route.path,
+          },
         },
         icon(route.icon, 17),
         el("span", { text: route.title })

@@ -51,6 +51,8 @@ export async function renderServers(view, ctx) {
 
   const searchInput = el("input", {
     class: "input",
+    id: "servers-search",
+    name: "search",
     type: "search",
     placeholder: "Search servers…",
     attrs: { "aria-label": "Search servers", autocomplete: "off" },
