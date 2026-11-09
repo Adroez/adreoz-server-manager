@@ -1274,3 +1274,128 @@
     grid-column: 1;
   }
 }
+
+/* -------------------------------------------------------------------- backups */
+.badge-danger {
+  background: rgba(248, 113, 113, 0.14);
+  color: var(--red-soft);
+  border: 1px solid rgba(248, 113, 113, 0.32);
+}
+
+.badge-warn {
+  background: rgba(251, 191, 36, 0.13);
+  color: var(--amber);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.backup-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 18px;
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-radius: var(--radius-lg);
+  background: rgba(251, 191, 36, 0.07);
+  color: var(--text);
+}
+
+.backup-notice svg {
+  flex: 0 0 auto;
+  color: var(--amber);
+  margin-top: 1px;
+}
+
+.backup-notice p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.backup-time {
+  font-weight: 600;
+}
+
+.backup-relative {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+}
+
+.backup-size {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.backup-error-text {
+  margin-top: 5px;
+  max-width: 260px;
+  color: var(--red-soft);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.align-right {
+  text-align: right;
+}
+
+.backup-settings {
+  display: grid;
+  gap: 18px;
+}
+
+.backup-setting-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, var(--radius));
+  background: var(--bg);
+}
+
+.backup-setting-toggle label {
+  display: grid;
+  gap: 3px;
+  cursor: pointer;
+}
+
+.backup-setting-toggle label span {
+  color: var(--text-dim);
+  font-size: 0.76rem;
+}
+
+.backup-checkbox {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--violet-bright);
+  cursor: pointer;
+}
+
+.backup-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.backup-retention-summary {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.backup-settings-note {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.backup-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 640px) {
+  .backup-settings-grid {
+    grid-template-columns: 1fr;
+  }
+}

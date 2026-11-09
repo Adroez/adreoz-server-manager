@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -17,6 +18,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.routes import (
     auth,
+    backups,
     consoles,
     dashboard,
     files,
@@ -37,6 +39,7 @@ from app.database.session import (
 )
 from app.middleware.security import SecurityHeadersMiddleware
 from app.services.auth import purge_expired_sessions
+from app.services.backup import backup_scheduler_loop
 from app.services.errors import DomainError
 
 logger = logging.getLogger("asm")
@@ -87,7 +90,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             finally:
                 db.close()
 
+        # In-process automatic backup scheduler. Tests disable it so runs are
+        # deterministic; the scheduler pass itself is exercised directly.
+        scheduler_task: asyncio.Task | None = None
+        if settings.backup_scheduler_enabled and settings.environment != "test":
+            scheduler_task = asyncio.create_task(
+                backup_scheduler_loop(
+                    settings,
+                    session_factory,
+                    app.state.process_manager,
+                    settings.backup_scheduler_interval_seconds,
+                )
+            )
+            app.state.backup_scheduler_task = scheduler_task
+
         yield
+
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except (asyncio.CancelledError, Exception):  # pragma: no cover
+                pass
+
         # Gracefully stop all server processes on shutdown.
         try:
             await app.state.process_manager.stop_all(timeout=15)
@@ -166,6 +191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(users.router, prefix=api_prefix)
     app.include_router(settings_routes.router, prefix=api_prefix)
     app.include_router(servers.router, prefix=api_prefix)
+    app.include_router(backups.router, prefix=api_prefix)
     app.include_router(files.router, prefix=api_prefix)
     app.include_router(consoles.router, prefix=api_prefix)
 

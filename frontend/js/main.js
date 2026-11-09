@@ -11,6 +11,7 @@ import { renderDashboard } from "./views/dashboard.js";
 import { renderLogin } from "./views/login.js";
 import { renderNotFound } from "./views/notfound.js";
 import { renderCreateServer } from "./views/server-create.js";
+import { renderBackups } from "./views/backups.js";
 import { renderFileEdit } from "./views/file-edit.js";
 import { renderFileManager } from "./views/files.js";
 import { renderServerConsole } from "./views/server-console.js";
@@ -72,6 +73,13 @@ const ROUTES = [
     group: "Workspace",
     icon: "settings",
     render: renderServerConfig,
+  },
+  {
+    path: "/servers/backups",
+    title: "Backups",
+    group: "Workspace",
+    icon: "archive",
+    render: renderBackups,
   },
   {
     path: "/servers/console",
@@ -149,6 +157,11 @@ function resolveRoute() {
   const configMatch = hash.match(/^\/servers\/(\d+)\/config$/);
   if (configMatch) {
     return { ...ROUTES.find((r) => r.path === "/servers/config"), _serverId: configMatch[1] };
+  }
+  // Dynamic match: /servers/:id/backups
+  const backupsMatch = hash.match(/^\/servers\/(\d+)\/backups$/);
+  if (backupsMatch) {
+    return { ...ROUTES.find((r) => r.path === "/servers/backups"), _serverId: backupsMatch[1] };
   }
   // Dynamic match: /servers/:id/console
   const consoleMatch = hash.match(/^\/servers\/(\d+)\/console$/);

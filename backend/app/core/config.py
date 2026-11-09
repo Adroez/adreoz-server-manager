@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     trusted_hosts: str = "127.0.0.1,localhost,[::1]"
     allow_root: bool = False
 
+    # Automatic backups run in-process; no external scheduler is required.
+    # The scheduler is disabled automatically in the test environment.
+    backup_scheduler_enabled: bool = True
+    backup_scheduler_interval_seconds: int = Field(default=300, ge=30, le=86400)
+
     @property
     def allowed_hosts(self) -> list[str]:
         hosts = [host.strip() for host in self.trusted_hosts.split(",") if host.strip()]

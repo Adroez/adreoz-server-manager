@@ -225,10 +225,34 @@ request reaches the panel.
 
 The entire runtime state is in `data/`:
 
-- `data/asm.db` — users, sessions, audit trail, settings.
-- `data/servers/` — reserved for Phase 2 server files.
-- `data/backups/` — reserved for Phase 4 backup artifacts.
+- `data/asm.db` — users, sessions, audit trail, backup metadata, settings.
+- `data/servers/` — live Minecraft server directories (worlds, configs, JARs).
+- `data/backups/` — managed `tar.gz` server backups created through the panel.
 - `data/logs/` — reserved for managed server logs.
+
+The directories are created `0700`; the database and backup archives are
+`0600`.
+
+### Managed server backups
+
+The panel creates and restores per-server archives from **Backups** on a server
+page:
+
+- Backups are created only while the server is stopped, written to a temporary
+  `.part` file, then atomically renamed.
+- Restores validate every archive entry and replace the server directory through
+  a staging swap; the source archive is kept.
+- Automatic backups are configured per server (1, 6, 12, 24, 72, or 168 hours)
+  and run in-process while the panel is running. Set
+  `ASM_BACKUP_SCHEDULER_ENABLED=false` to disable the scheduler, and adjust
+  `ASM_BACKUP_SCHEDULER_INTERVAL_SECONDS` (minimum 30) to change how often it
+  checks.
+- Retention keeps the newest 1–100 backups per server and removes older ones.
+  Backups are not encrypted at rest, so protect `data/backups/` and the host.
+
+Back up `data/backups/` itself if you need copies off-host. Managed backups are
+not a substitute for the database backup below: restoring a server does not
+restore users, sessions, or settings.
 
 ### Online SQLite backup
 

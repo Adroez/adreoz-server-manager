@@ -51,6 +51,10 @@ editing, upload/download, and server.properties configuration editor.
   ownership enforced on every endpoint.
 - **Configuration editor** — structured editor for server.properties with
   validation, unknown property preservation, and restart warnings.
+- **Backups & restore** — create tar.gz backups of stopped servers, download,
+  delete, and restore them through a staging swap. Archives live outside the
+  server directory, restores reject traversal and symlink entries, and
+  per-server automatic backups with retention run in-process.
 - **Premium dark UI** — lavender/purple design system, responsive layout,
   accessible components, modals, toasts, and inline validation.
 
@@ -119,6 +123,8 @@ All defaults are loopback-only and safe for a local install.
 | `ASM_TRUST_PROXY_HEADERS` | `false` | Trust proxy IP headers |
 | `ASM_TRUSTED_HOSTS` | `127.0.0.1,localhost,[::1]` | Allowed `Host` headers |
 | `ASM_ALLOW_ROOT` | `false` | Refuse root by default |
+| `ASM_BACKUP_SCHEDULER_ENABLED` | `true` | Run the in-process automatic-backup scheduler |
+| `ASM_BACKUP_SCHEDULER_INTERVAL_SECONDS` | `300` | How often the scheduler checks for due backups |
 | `ASM_LOG_LEVEL` | `info` | Uvicorn log level |
 
 The administrator can change the *effective* session lifetime from
@@ -129,6 +135,47 @@ afterwards.
 header is not on the list is rejected with `400 Invalid host header`; add the
 public hostname when running behind a reverse proxy. Runtime data directories
 are created `0700`, and a file-backed SQLite database is restricted to `0600`.
+
+## Backups
+
+Backups are `tar.gz` archives containing the server directory's files and
+configuration. They are stored in `data/backups/` — outside `data/servers/`, so
+the file manager can never browse or modify them. Each archive has a generated
+name (`server-<id>-<uuid>.tar.gz`) and a database record holding its unique ID,
+size, status, creation time, and any sanitized error.
+
+**Create.** Open a server, choose **Backups → Create backup**. The server must
+be **stopped**; the UI explains this and disables the action while it runs. A
+backup is written to a temporary `.part` file and atomically renamed, so a
+failed create never leaves a half-written archive. Insufficient disk space and
+other failures are recorded with a safe message and shown in the list.
+
+**Download / delete.** Both actions are owner/admin only and scoped to the
+server that owns the backup. Deleting removes the archive from disk and the
+metadata row.
+
+**Restore.** Stop the server, choose a completed backup, and confirm the
+warning. The archive is validated (absolute paths, `..`, symlinks, hard links,
+and device entries are rejected) and extracted into a staging directory under
+`data/servers/`. Only then is the live server directory swapped out; if the swap
+fails, the previous directory is put back. The original backup archive is kept.
+
+**Automatic backups.** Per-server settings enable scheduling, choose a
+frequency (1, 6, 12, 24, 72, or 168 hours), and set a retention count. The
+in-process scheduler checks every `ASM_BACKUP_SCHEDULER_INTERVAL_SECONDS` while
+the panel runs, creates a backup when one is due and the server is stopped, and
+skips running servers. After each successful create, older backups for that
+server beyond the retention limit are removed; cleanup never touches another
+server's backups. Scheduler failures are logged and do not crash the panel.
+
+Operational notes:
+
+- Only one backup or restore can run per server at a time; a concurrent request
+  returns `409 Conflict`.
+- Archives are not encrypted at rest. The `data/` tree is owner-only (`0700`);
+  protect the host and its filesystem.
+- Restores replace the entire server directory with the archive contents.
+- Single-archive size is capped at 4 GB.
 
 ## Project layout
 
@@ -202,6 +249,14 @@ endpoints require both an authenticated session cookie **and** the
 | `GET` | `/api/servers/{id}/config/properties` | Session | Read server.properties |
 | `PATCH` | `/api/servers/{id}/config/properties` | Session + CSRF | Update server.properties |
 | `GET` | `/api/servers/{id}/config/validation` | Session | Config validation info |
+| `GET` | `/api/servers/{id}/backups` | Session | List backups |
+| `POST` | `/api/servers/{id}/backups` | Session + CSRF | Create a backup (stopped only) |
+| `GET` | `/api/servers/{id}/backups/{backup_id}` | Session | Backup details |
+| `GET` | `/api/servers/{id}/backups/{backup_id}/download` | Session | Download archive |
+| `DELETE` | `/api/servers/{id}/backups/{backup_id}` | Session + CSRF | Delete backup |
+| `POST` | `/api/servers/{id}/backups/{backup_id}/restore` | Session + CSRF | Restore backup (stopped only) |
+| `GET` | `/api/servers/{id}/backups/settings` | Session | Read automatic backup settings |
+| `PATCH` | `/api/servers/{id}/backups/settings` | Session + CSRF | Update automatic backup settings |
 
 In `development`, interactive docs are available at `/docs`. In `production`
 they are disabled.
@@ -217,13 +272,13 @@ Or run the suites individually:
 ```bash
 # From the project root:
 .venv/bin/python -m pytest backend -q
-node --test frontend/js/tests/format.test.mjs
+node --test frontend/js/tests/*.test.mjs
 ```
 
 Current results for this phase:
 
-- Backend: **72 passed, 1 warning** (36 Phase 1 + 13 Phase 2 server lifecycle + 10 Phase 3 console + 13 Phase 4 file manager).
-- Frontend: **8 passed, 0 failed**.
+- Backend: **101 passed, 1 warning** (36 Phase 1 + 13 Phase 2 server lifecycle + 10 Phase 3 console + 17 Phase 4 file manager/config + 25 Phase 5 backups).
+- Frontend: **46 passed, 0 failed** (8 formatting + 21 Phase 4 file manager/config + 17 Phase 5 backups).
 
 The backend suite covers setup locking, login/logout, login session rotation,
 CSRF enforcement, RBAC, cross-user denial, rate limiting, password change and
@@ -233,9 +288,14 @@ rejection, strict request bodies, owner-only file permissions, secure
 cookies/HSTS, server CRUD, server ownership, server lifecycle, WebSocket
 console authentication, console ownership, console command delivery, console
 disconnection, file manager CRUD, file ownership, directory traversal
-prevention, symlink escape prevention, configuration editing, migrations, and
-live dashboard metrics. The frontend suite covers formatting helpers used across
-views.
+prevention, symlink escape prevention, configuration editing, backup
+creation/metadata, backup ownership, download/delete, restore success and
+rollback, running-server rejection, invalid/corrupted/missing archives, archive
+traversal and symlink rejection, concurrent operation conflicts, automatic
+backup settings, retention cleanup, scheduler behavior, audit logging,
+migrations, and live dashboard metrics. The frontend suite covers formatting
+helpers, Phase 4 file-manager/config logic, and Phase 5 backup status, action
+availability, list mapping, settings validation, and error states.
 
 ## Security posture
 
@@ -272,14 +332,14 @@ limitations.
 | 2 | Server lifecycle: create, configure, start, stop | **Complete** |
 | 3 | Live console: WebSocket streaming, command input | **Complete** |
 | 4 | File manager & configuration editor | **Complete** |
-| 5 | Console & files: WebSocket console, file manager | Next |
-| 6 | Java/runtime management and version pinning | Planned |
+| 5 | Backup & restore system | **Complete** |
+| 6 | Java/runtime management and version pinning | Next |
 | 7 | Per-server permissions and collaboration | Planned |
 | 8 | Monitoring, alerts, and metrics history | Planned |
 | 9 | Automation, API tokens, and integrations | Planned |
 
-Phase 1 deliberately ships no server controls. The dashboard roadmap is
-informational; it does not contain placeholder actions.
+Phases 1–5 are fully implemented and covered by the test suites. Later roadmap
+rows are informational and contain no placeholder actions.
 
 ## License
 

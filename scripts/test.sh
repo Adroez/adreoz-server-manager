@@ -22,7 +22,7 @@ echo "== Backend (pytest) =="
 if command -v node >/dev/null 2>&1; then
   echo
   echo "== Frontend (node --test) =="
-  node --test frontend/js/tests/format.test.mjs
+  node --test frontend/js/tests/*.test.mjs
 else
   echo
   echo "Node.js not found; skipping frontend tests."

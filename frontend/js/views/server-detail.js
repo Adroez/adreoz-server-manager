@@ -101,6 +101,15 @@ export async function renderServerDetail(view, ctx) {
         },
       })
     );
+    headerActions.push(
+      actionButton({
+        label: "Backups",
+        iconName: "archive",
+        handler: () => {
+          window.location.hash = `#/servers/${data.id}/backups`;
+        },
+      })
+    );
     if (data.status === "stopped" || data.status === "error") {
       headerActions.push(
         actionButton({

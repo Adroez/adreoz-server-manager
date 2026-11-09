@@ -57,8 +57,10 @@ create, configure, start, and stop Minecraft servers with per-user ownership.
 | `app/api/deps.py` | `get_db`, session authentication, CSRF, admin guards, IP rate limits |
 | `app/api/routes/` | HTTP endpoints grouped by concern |
 | `app/api/routes/servers.py` | Server CRUD, lifecycle, logs |
+| `app/api/routes/backups.py` | Backup create/list/download/delete/restore and settings |
 | `app/services/` | Transactional business logic and audit recording |
 | `app/services/servers.py` | Server CRUD, ownership, lifecycle, process management |
+| `app/services/backup.py` | Archive creation, safe restore, retention, scheduler |
 | `app/middleware/security.py` | Response headers and cache policy |
 
 ### Frontend modules
@@ -73,6 +75,7 @@ create, configure, start, and stop Minecraft servers with per-user ownership.
 | `frontend/js/views/servers.js` | Server list page |
 | `frontend/js/views/server-create.js` | Create server form |
 | `frontend/js/views/server-detail.js` | Server details and controls |
+| `frontend/js/views/backups.js` | Backup list, actions, and automatic settings |
 | `frontend/js/views/` | Setup, login, dashboard, users, settings, account, servers, 404 |
 | `frontend/css/` | Design tokens, base styles, components, layout, view styles |
 
@@ -150,6 +153,17 @@ server_logs
   stream    text (stdout | stderr)
   line      text
   created_at datetime
+
+server_backups
+  id            integer PK
+  owner_id      integer FK users.id ON DELETE CASCADE
+  server_id     integer FK servers.id ON DELETE CASCADE
+  unique_id     text UNIQUE (UUID v4)
+  filename      text (managed name inside data/backups/)
+  size_bytes    bigint
+  status        text (creating | completed | failed | restoring)
+  error_message text NULL (sanitized, user-facing)
+  created_at    datetime (indexed)
 ```
 
 ### Why these shapes
@@ -282,7 +296,43 @@ each server's directory:
 5. All configuration changes are audited.
 
 
-- Deletion (`DELETE`) requires `status = stopped`.
+### Backups and restore
+
+`GET/POST/DELETE /api/servers/{id}/backups` and the `/restore` and
+`/settings` sub-routes move data between a live server directory and the
+managed archive store in `data/backups/`.
+
+1. Every endpoint authenticates the session and enforces server ownership
+   (admins may act on any server). Backup IDs are resolved only within the
+   requested server, so a valid ID from another server returns `404`.
+2. Creation requires the server to be `stopped`. The archive is written to
+   `<name>.tar.gz.part` and atomically renamed with `os.replace()`, so a crash
+   or a full disk never leaves a browsable partial archive. Symlinks and
+   special files are skipped while walking the server directory.
+3. Each record stores a generated filename (`server-<id>-<uuid>.tar.gz`), the
+   UUID, size, status (`creating`, `completed`, `failed`, `restoring`), and a
+   sanitized error message. Disk-full and corrupt-archive failures are
+   translated to safe text; host paths stay in the server log.
+4. Restore re-validates the server status, opens the archive, and checks every
+   member before extraction: absolute paths, `..` components, symlinks, hard
+   links, devices, and FIFOs are rejected. Validated members are extracted with
+   `filter="data"` into a staging directory under `data/servers/`. The live
+   directory is then swapped out with `os.replace()`; if the swap fails the
+   previous directory is restored. The source archive is never consumed.
+5. Backup and restore share a non-blocking per-server lock. A second operation
+   on the same server returns `409 Conflict` instead of racing the archive.
+6. Automatic backups are configured per server in `app_settings`
+   (`backup_enabled_<id>`, `backup_interval_<id>`, `backup_max_<id>`).
+   Supported intervals are 1, 6, 12, 24, 72, and 168 hours; retention is 1–100.
+   The in-process `backup_scheduler_loop` runs every
+   `ASM_BACKUP_SCHEDULER_INTERVAL_SECONDS`, skips servers that are not stopped,
+   and creates a backup only when one is due. Each server is handled in its own
+   session and try/except, so a single failure cannot abort the pass.
+7. After a successful create, retention keeps the newest `max_backups`
+   completed/failed rows for that server and deletes older rows and files.
+   Other servers' backups are never eligible.
+8. Creation, failure, restore, deletion, settings changes, and retention pruning
+   are written to the audit trail (`backup.*`).
 
 ### Errors
 

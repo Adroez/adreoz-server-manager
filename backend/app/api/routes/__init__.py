@@ -2,6 +2,7 @@
 
 from app.api.routes import (
     auth,
+    backups,
     consoles,
     dashboard,
     files,
@@ -14,6 +15,7 @@ from app.api.routes import (
 
 __all__ = [
     "auth",
+    "backups",
     "consoles",
     "dashboard",
     "files",
