@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.clock import UtcDateTime
@@ -80,6 +82,7 @@ class ServerCreateRequest(ServerBase):
 
     directory: str | None = Field(default=None, max_length=512)
     java_runtime_id: int | None = None
+    build_version: str | None = Field(default=None, max_length=64)
 
 
 class ServerUpdateRequest(StrictRequest):
@@ -146,6 +149,7 @@ class ServerOut(BaseModel):
     name: str
     software_type: str
     version: str
+    software_version: Optional[str] = None
     directory: str
     port: int
     max_players: int
@@ -157,6 +161,8 @@ class ServerOut(BaseModel):
     status: str
     process_id: int | None
     java_runtime_id: int | None
+    install_status: str
+    install_error: Optional[str] = None
     created_at: UtcDateTime
     updated_at: UtcDateTime
     started_at: UtcDateTime | None

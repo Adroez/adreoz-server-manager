@@ -462,6 +462,13 @@ def test_server_start_requires_installed_jar(
         client, player_username="serverowner", server_name="no-jar", server_port=25590
     )
 
+    # Remove the installed JAR to simulate a server without software.
+    from pathlib import Path
+
+    jar_path = Path(server["directory"]) / "server.jar"
+    if jar_path.exists():
+        jar_path.unlink()
+
     response = client.post(
         f"/api/servers/{server['id']}/start", headers=csrf_headers(client)
     )

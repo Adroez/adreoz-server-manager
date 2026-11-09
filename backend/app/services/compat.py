@@ -16,6 +16,13 @@ logger = logging.getLogger("asm.compat")
 # Keyed by Minecraft version string (e.g. "1.20.1"). The special key "__all__"
 # is not used; unknown versions fall back to the `default_java_major`.
 MINECRAFT_JAVA_REQUIREMENTS: dict[str, int] = {
+    # Java 8
+    "1.16": 8,
+    "1.16.1": 8,
+    "1.16.2": 8,
+    "1.16.3": 8,
+    "1.16.4": 8,
+    "1.16.5": 8,
     # Java 16
     "1.17": 16,
     "1.17.1": 16,

@@ -91,7 +91,9 @@ def test_file_manager_list_root(client: TestClient, admin_ready: dict, app) -> N
     payload = response.json()
     assert payload["path"] == ""
     assert payload["parent"] is None
-    assert payload["items"] == []
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["name"] == "server.jar"
+    assert payload["items"][0]["type"] == "file"
 
 
 def test_file_manager_create_folder_and_list(client: TestClient, admin_ready: dict) -> None:
@@ -109,15 +111,17 @@ def test_file_manager_create_folder_and_list(client: TestClient, admin_ready: di
     assert create.status_code == 200, create.text
     assert create.json()["path"] == "world"
 
-    # List root - should see the folder.
+    # List root - should see the folder and server.jar.
     response = client.get(
         f"/api/servers/{server_id}/files", headers=csrf_headers(client)
     )
     assert response.status_code == 200
     items = response.json()["items"]
-    assert len(items) == 1
-    assert items[0]["name"] == "world"
-    assert items[0]["type"] == "directory"
+    assert len(items) == 2
+    names = {item["name"] for item in items}
+    assert names == {"server.jar", "world"}
+    world = next(item for item in items if item["name"] == "world")
+    assert world["type"] == "directory"
 
 
 def test_file_manager_create_file_and_read(client: TestClient, admin_ready: dict) -> None:

@@ -18,10 +18,10 @@ import {
 } from "../components/ui.js";
 
 const SOFTWARE_TYPES = [
-  { value: "vanilla", label: "Vanilla", hint: "Official Minecraft server software" },
-  { value: "paper", label: "Paper", hint: "High-performance Minecraft server" },
-  { value: "fabric", label: "Fabric", hint: "Lightweight modded server loader" },
-  { value: "forge", label: "Forge", hint: "Classic modded server loader" },
+  { value: "vanilla", label: "Vanilla", hint: "Official Minecraft server software", loaderRequired: false },
+  { value: "paper", label: "Paper", hint: "High-performance Minecraft server", loaderRequired: true },
+  { value: "fabric", label: "Fabric", hint: "Lightweight modded server loader", loaderRequired: true },
+  { value: "forge", label: "Forge", hint: "Classic modded server loader", loaderRequired: true },
 ];
 
 // Validates create-server form inputs. Returns an error message string, or
@@ -70,6 +70,7 @@ export function buildCreateServerBody({
   viewDistance,
   motd,
   javaRuntimeId,
+  buildVersion,
 }) {
   return {
     name: name.trim(),
@@ -83,6 +84,7 @@ export function buildCreateServerBody({
     view_distance: Number(viewDistance),
     motd: motd.trim(),
     java_runtime_id: javaRuntimeId === "" || javaRuntimeId == null ? null : Number(javaRuntimeId),
+    build_version: buildVersion || null,
   };
 }
 
@@ -99,6 +101,8 @@ export async function renderCreateServer(view, ctx) {
     hint: "3–64 characters. Letters, numbers, dots, underscores, hyphens.",
     extraAttrs: { autocapitalize: "none", spellcheck: "false" },
   });
+
+  // Software type select.
   const softwareSelect = el(
     "select",
     { class: "select", id: "create-server-software" },
@@ -114,12 +118,39 @@ export async function renderCreateServer(view, ctx) {
     softwareSelect,
     el("p", { class: "field-hint", text: "Server software type and installer." })
   );
-  const version = makeField({
-    id: "create-server-version",
-    label: "Minecraft version",
-    value: "1.20.1",
-    hint: "Version will be validated when the server is installed.",
-  });
+
+  // Minecraft version select (populated dynamically).
+  const versionSelect = el(
+    "select",
+    { class: "select", id: "create-server-version", disabled: true }
+  );
+  versionSelect.appendChild(
+    el("option", { value: "", text: "Loading versions…", disabled: true })
+  );
+  const versionField = el(
+    "div",
+    { class: "field" },
+    el("label", { attrs: { for: "create-server-version" }, text: "Minecraft version" }),
+    versionSelect,
+    el("p", { class: "field-hint", text: "Select a Minecraft version for the server." })
+  );
+
+  // Build/loader version select (for paper, fabric, forge).
+  const buildSelect = el(
+    "select",
+    { class: "select", id: "create-server-build", disabled: true }
+  );
+  buildSelect.appendChild(
+    el("option", { value: "", text: "—", disabled: true })
+  );
+  const buildField = el(
+    "div",
+    { class: "field" },
+    el("label", { attrs: { for: "create-server-build" }, text: "Build / Loader" }),
+    buildSelect,
+    el("p", { class: "field-hint", text: "Required for Paper, Fabric, and Forge." })
+  );
+
   const javaRuntimeSelect = el("select", {
     class: "select",
     id: "create-server-java-runtime",
@@ -262,7 +293,8 @@ export async function renderCreateServer(view, ctx) {
     errorBox,
     name.field,
     softwareField,
-    version.field,
+    versionField,
+    buildField,
     javaRuntimeField,
     port.field,
     maxPlayers.field,
@@ -278,6 +310,102 @@ export async function renderCreateServer(view, ctx) {
       submit
     )
   );
+
+  // ------------------------------------------------------------------
+  // Dynamic version / build loading
+  // ------------------------------------------------------------------
+
+  let versions = [];
+  let builds = [];
+
+  async function loadVersions() {
+    const softwareType = softwareSelect.value;
+    versionSelect.disabled = true;
+    buildSelect.disabled = true;
+    versionSelect.replaceChildren(
+      el("option", { value: "", text: "Loading versions…", disabled: true })
+    );
+    buildSelect.replaceChildren(
+      el("option", { value: "", text: "—", disabled: true })
+    );
+    versions = [];
+    builds = [];
+
+    try {
+      const data = await api(`/servers/software/versions/${softwareType}`);
+      versions = data.versions || [];
+    } catch (err) {
+      versionSelect.replaceChildren(
+        el("option", { value: "", text: "Failed to load versions", disabled: true })
+      );
+      showFormError(errorBox, `Failed to load versions: ${err.message}`);
+      return;
+    }
+
+    versionSelect.replaceChildren(
+      el("option", { value: "", text: "Select a version…" })
+    );
+    for (const v of versions) {
+      versionSelect.appendChild(
+        el("option", { value: v.id, text: v.id })
+      );
+    }
+    versionSelect.disabled = false;
+
+    // If software doesn't need a build, enable version and select first.
+    const softwareInfo = SOFTWARE_TYPES.find((s) => s.value === softwareType);
+    if (softwareInfo && !softwareInfo.loaderRequired && versions.length > 0) {
+      versionSelect.value = versions[0].id;
+    }
+  }
+
+  async function loadBuilds() {
+    const softwareType = softwareSelect.value;
+    const version = versionSelect.value;
+    if (!softwareType || !version) return;
+
+    const softwareInfo = SOFTWARE_TYPES.find((s) => s.value === softwareType);
+    if (!softwareInfo || !softwareInfo.loaderRequired) {
+      buildSelect.disabled = true;
+      buildSelect.replaceChildren(
+        el("option", { value: "", text: "—", disabled: true })
+      );
+      builds = [];
+      return;
+    }
+
+    buildSelect.disabled = true;
+    buildSelect.replaceChildren(
+      el("option", { value: "", text: "Loading builds…", disabled: true })
+    );
+
+    try {
+      const data = await api(`/servers/software/builds/${softwareType}/${version}`);
+      builds = data.builds || [];
+    } catch (err) {
+      buildSelect.replaceChildren(
+        el("option", { value: "", text: "Failed to load builds", disabled: true })
+      );
+      showFormError(errorBox, `Failed to load builds: ${err.message}`);
+      return;
+    }
+
+    buildSelect.replaceChildren(
+      el("option", { value: "", text: "Select a build/loader…" })
+    );
+    for (const b of builds) {
+      buildSelect.appendChild(
+        el("option", { value: b.id, text: b.id })
+      );
+    }
+    buildSelect.disabled = false;
+  }
+
+  softwareSelect.addEventListener("change", loadVersions);
+  versionSelect.addEventListener("change", loadBuilds);
+
+  // Load versions for the initially selected software type.
+  loadVersions();
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -295,6 +423,16 @@ export async function renderCreateServer(view, ctx) {
       return;
     }
 
+    const softwareType = softwareSelect.value;
+    const softwareInfo = SOFTWARE_TYPES.find((s) => s.value === softwareType);
+    const buildVersion = buildSelect.value || null;
+
+    // Validate build version for loader-required software.
+    if (softwareInfo && softwareInfo.loaderRequired && !buildVersion) {
+      showFormError(errorBox, `Please select a build/loader version for ${softwareInfo.label}.`);
+      return;
+    }
+
     setBusy(submit, true);
     try {
       const created = await api("/servers", {
@@ -302,7 +440,7 @@ export async function renderCreateServer(view, ctx) {
         body: buildCreateServerBody({
           name: name.input.value,
           softwareType: softwareSelect.value,
-          version: version.input.value,
+          version: versionSelect.value,
           port: port.input.value,
           maxPlayers: maxPlayers.input.value,
           onlineMode: onlineMode.checked,
@@ -311,9 +449,10 @@ export async function renderCreateServer(view, ctx) {
           viewDistance: viewDistance.input.value,
           motd: motd.input.value,
           javaRuntimeId: javaRuntimeSelect.value,
+          buildVersion,
         }),
       });
-      toast(`Created ${created.name}.`);
+      toast(`Created ${created.name}. Software installation started.`);
       window.location.hash = `#/servers/${created.id}`;
     } catch (error) {
       showFormError(errorBox, error.message);
@@ -329,7 +468,7 @@ export async function renderCreateServer(view, ctx) {
         eyebrow: "Server lifecycle",
         title: "Create server",
         description:
-          "Set up a new Minecraft server. Server software is not installed automatically; place server.jar in the server directory before starting.",
+          "Server software is downloaded and installed automatically during creation. Select the software type, Minecraft version, and (for Paper/Fabric/Forge) a build/loader version.",
       }),
       el("div", { class: "card" }, el("div", { class: "card-body" }, form))
     )

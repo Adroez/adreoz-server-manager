@@ -7,9 +7,12 @@ from app.api.routes import (
     dashboard,
     files,
     health,
+    java_runtimes,
+    minecraft_versions,
     servers,
     settings,
     setup,
+    software,
     users,
 )
 
@@ -20,8 +23,11 @@ __all__ = [
     "dashboard",
     "files",
     "health",
+    "java_runtimes",
+    "minecraft_versions",
     "servers",
     "settings",
     "setup",
+    "software",
     "users",
 ]

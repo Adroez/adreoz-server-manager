@@ -21,6 +21,13 @@ const STATUS_BADGE = {
   error: "badge badge-danger",
 };
 
+const INSTALL_BADGE = {
+  pending: "badge is-warn",
+  completed: "badge-active",
+  failed: "badge badge-danger",
+  none: "badge-inactive",
+};
+
 export async function renderServerDetail(view, ctx) {
   // Extract server ID from hash: #/servers/123
   const hash = window.location.hash.slice(1);
@@ -65,6 +72,11 @@ export async function renderServerDetail(view, ctx) {
     const canManage = true; // Ownership checked by backend; UI shows all controls
 
     const headerActions = [];
+    const installComplete =
+      data.install_status === "completed" || data.install_status === "none";
+    const canStart =
+      data.status === "stopped" || data.status === "error";
+
     if (data.status === "running") {
       headerActions.push(
         actionButton({
@@ -84,11 +96,20 @@ export async function renderServerDetail(view, ctx) {
         })
       );
     } else {
+      const startDisabled =
+        !canStart ||
+        (data.install_status !== "completed" &&
+          data.install_status !== "none");
       headerActions.push(
         actionButton({
           label: data.status === "error" ? "Retry" : "Start",
           iconName: "power",
+          disabled: startDisabled,
           handler: () => changeStatus("start"),
+          title:
+            startDisabled || data.install_status === "completed" || data.install_status === "none"
+              ? undefined
+              : "Server software is not installed. Install software before starting.",
         })
       );
     }
@@ -130,6 +151,24 @@ export async function renderServerDetail(view, ctx) {
       );
     }
 
+    // Software install action (only when stopped and install not completed).
+    if (
+      data.status === "stopped" &&
+      data.install_status !== "completed"
+    ) {
+      headerActions.push(
+        actionButton({
+          label:
+            data.install_status === "failed"
+              ? "Retry Install"
+              : "Install Software",
+          iconName: "download",
+          variant: "secondary",
+          handler: () => installSoftware(data),
+        })
+      );
+    }
+
     const statusNode = el(
       "span",
       {
@@ -141,6 +180,16 @@ export async function renderServerDetail(view, ctx) {
       }),
       document.createTextNode(
         data.status.charAt(0).toUpperCase() + data.status.slice(1)
+      )
+    );
+
+    const installNode = el(
+      "span",
+      {
+        class: INSTALL_BADGE[data.install_status] || "badge",
+      },
+      document.createTextNode(
+        data.install_status.charAt(0).toUpperCase() + data.install_status.slice(1)
       )
     );
 
@@ -171,6 +220,13 @@ export async function renderServerDetail(view, ctx) {
           infoRow("Name", data.name),
           infoRow("Unique ID", data.unique_id),
           infoRow("Software", `${data.software_type} ${data.version}`),
+          data.software_version
+            ? infoRow("Software Version", data.software_version)
+            : null,
+          infoRow("Install Status", installNode),
+          data.install_error
+            ? infoRow("Install Error", data.install_error)
+            : null,
           infoRow(
             "Java runtime",
             (() => {
@@ -273,7 +329,10 @@ export async function renderServerDetail(view, ctx) {
               {
                 class: `btn btn-${data.status === "running" ? "danger" : "primary"}`,
                 type: "button",
-                disabled: data.status === "starting" || data.status === "stopping",
+                disabled:
+                  data.status === "starting" ||
+                  data.status === "stopping" ||
+                  startDisabled,
                 on: { click: () => changeStatus(data.status === "running" ? "stop" : "start") },
               },
               icon(data.status === "running" ? "power" : "power", 15),
@@ -291,7 +350,9 @@ export async function renderServerDetail(view, ctx) {
                 class: "btn btn-secondary",
                 type: "button",
                 disabled:
-                  data.status !== "running" && data.status !== "stopped" && data.status !== "error",
+                  data.status !== "running" &&
+                  data.status !== "stopped" &&
+                  data.status !== "error",
                 on: { click: () => changeStatus("restart") },
               },
               icon("refresh", 15),
@@ -359,6 +420,114 @@ export async function renderServerDetail(view, ctx) {
     } catch (error) {
       toast(error.message, "error");
     }
+  }
+
+  async function installSoftware(serverData) {
+    const confirmed = await confirmInstall(serverData);
+    if (!confirmed) return;
+
+    try {
+      await api(`/servers/${serverId}/software/install`, {
+        method: "POST",
+        body: {
+          software_type: serverData.software_type,
+          version: serverData.version,
+          build_version: serverData.software_version || null,
+        },
+      });
+      toast("Software installation started.", "info");
+      const updated = await api(`/servers/${serverId}`);
+      if (ctx.isCurrent()) render(updated, runtimes);
+    } catch (error) {
+      toast(error.message || "Failed to start installation.", "error");
+    }
+  }
+
+  function confirmInstall(serverData) {
+    return new Promise((resolve) => {
+      const dialog = el("dialog", { class: "modal" });
+
+      const close = () => {
+        if (dialog.open) dialog.close();
+      };
+
+      const header = el(
+        "div",
+        { class: "modal-header" },
+        el(
+          "div",
+          {},
+          el(
+            "h3",
+            { class: "modal-title",
+            text:
+              serverData.install_status === "failed"
+                ? "Retry Software Installation"
+                : "Install Server Software"
+            }
+          )
+        ),
+        el(
+          "button",
+          {
+            class: "modal-close",
+            type: "button",
+            attrs: { "aria-label": "Close dialog" },
+            on: { click: close },
+          },
+          icon("x", 16)
+        )
+      );
+
+      const body = el(
+        "div",
+        { class: "modal-body confirm-body" },
+        el("div", { class: "empty-icon confirm-icon" }, icon("download", 20)),
+        el(
+          "p",
+          { class: "confirm-copy" },
+          document.createTextNode(
+            `Install ${serverData.software_type} ${serverData.version} for "${serverData.name}"?\n\n` +
+            "The EULA (eula.txt) will not be automatically accepted. You must accept it manually before first startup."
+          )
+        )
+      );
+
+      const footer = el(
+        "div",
+        { class: "modal-footer" },
+        el(
+          "button",
+          {
+            class: "btn btn-ghost",
+            type: "button",
+            on: { click: () => { close(); resolve(false); } },
+          },
+          document.createTextNode("Cancel")
+        ),
+        el(
+          "button",
+          {
+            class: "btn btn-primary",
+            type: "button",
+            on: { click: () => { close(); resolve(true); } },
+          },
+          icon("download", 15),
+          document.createTextNode("Install")
+        )
+      );
+
+      dialog.append(header, body, footer);
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) { close(); resolve(false); }
+      });
+      dialog.addEventListener("close", () => {
+        dialog.remove();
+      });
+
+      document.body.append(dialog);
+      dialog.showModal();
+    });
   }
 
   async function selectJavaRuntime(serverIdValue, runtimeIdValue) {

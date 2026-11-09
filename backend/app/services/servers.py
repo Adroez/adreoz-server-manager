@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import socket
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,9 +39,12 @@ from app.services.audit import RequestMeta, record_audit
 from app.services.compat import check_compatibility
 from app.services.errors import ConflictError, DomainError, ForbiddenError, NotFoundError
 from app.services.operations import OperationType, acquire_operation_lock
+from app.services.software_install import SoftwareInstallService
 
 # Maximum number of log lines retained per server in the database.
 MAX_LOG_LINES = 5000
+
+logger = logging.getLogger("asm.servers")
 
 
 def _resolve_server_directory(
@@ -131,6 +135,7 @@ def create_server(
     settings: Settings,
     payload: ServerCreateRequest,
     owner: User,
+    session_factory,
     meta: RequestMeta | None = None,
 ) -> Server:
     """Create a new server record and initialize its directory."""
@@ -170,6 +175,8 @@ def create_server(
         motd=payload.motd,
         status="stopped",
         java_runtime_id=java_runtime_id,
+        software_version=payload.software_version if hasattr(payload, 'software_version') else None,
+        install_status="pending",
     )
     db.add(server)
     try:
@@ -177,6 +184,34 @@ def create_server(
     except Exception as exc:
         db.rollback()
         raise ConflictError("Failed to create server record.") from exc
+
+    # Install server software (download JAR, verify, etc.).
+    try:
+        software_service = SoftwareInstallService(settings, session_factory)
+        install_result = software_service.install_software(
+            db,
+            server=server,
+            software_type=payload.software_type,
+            version=version,
+            build_version=getattr(payload, 'build_version', None),
+            actor=owner,
+            meta=meta,
+        )
+        # Refresh to get updated fields.
+        db.refresh(server)
+    except Exception as exc:
+        # Mark installation as failed but keep the server record. The server
+        # was created successfully; only software installation failed. Callers
+        # can retry installation via the software install endpoint.
+        server.install_status = "failed"
+        server.install_error = str(exc)
+        db.commit()
+        db.refresh(server)
+        logger.warning(
+            "Server '%s' created but software installation failed: %s",
+            server.name,
+            exc,
+        )
 
     record_audit(
         db,
@@ -493,6 +528,90 @@ async def _monitor_process(
         logger.exception("Failed to record exit for server %s", server_id)
 
 
+def _jar_filename_for_server(server: Server) -> str:
+    """Return the expected JAR filename for a server's software type.
+
+    Vanilla: server.jar
+    Paper: paper-{version}-{build}.jar
+    Fabric: fabric-server-launch-{loader}.jar
+    Forge: forge-{version}-{forge}-installer.jar (installer; run on first launch)
+    """
+    software_type = server.software_type
+    version = server.version
+    build = server.software_version
+
+    if software_type == "vanilla":
+        return "server.jar"
+    if software_type == "paper":
+        return f"paper-{version}-{build}.jar" if build else f"paper-{version}.jar"
+    if software_type == "fabric":
+        return f"fabric-loader-{build}.jar" if build else "fabric-loader.jar"
+    if software_type == "forge":
+        return f"forge-{version}-{build}-installer.jar" if build else "forge-installer.jar"
+    return "server.jar"
+
+
+def _forge_server_jar(directory: Path, version: str, build: str | None) -> Path | None:
+    """Return the path to the generated Forge server JAR, if the installer
+    has already been run. Otherwise return None."""
+    if build is None:
+        return None
+    candidate = directory / f"forge-{version}-{build}.jar"
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+async def _run_forge_installer(
+    directory: Path,
+    java_executable: str,
+    installer_jar: str,
+) -> None:
+    """Run the Forge installer to generate server files.
+
+    Executes ``java -jar <installer> --installServer`` in the server
+    directory. This generates forge-{version}-{forge}.jar, libraries/,
+    run scripts, and argument files. Raises DomainError on failure.
+    """
+    import subprocess
+
+    installer_path = directory / installer_jar
+    if not installer_path.is_file():
+        raise DomainError(
+            f"Forge installer JAR '{installer_jar}' not found. Reinstall software."
+        )
+
+    cmd = [
+        java_executable,
+        "-jar",
+        str(installer_path),
+        "--installServer",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(directory),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DomainError(
+            f"Failed to execute Forge installer: {exc}"
+        ) from exc
+
+    if result.returncode != 0:
+        logger.error(
+            "Forge installer failed (exit %d): %s",
+            result.returncode,
+            result.stderr.strip()[:500],
+        )
+        raise DomainError(
+            f"Forge installer failed (exit {result.returncode}). "
+            "Check server logs for details."
+        )
+
+
 async def _launch_process(
     server: Server,
     process_manager: ProcessManager,
@@ -510,19 +629,77 @@ async def _launch_process(
 
     ``java_executable`` is the resolved path to the Java binary for this
     server's selected runtime (defaults to system ``java``).
+
+    The launch command is software-type specific:
+      - Vanilla: java -jar server.jar nogui
+      - Paper:   java -jar paper-{ver}-{build}.jar nogui
+      - Fabric:  java -cp fabric-loader-{loader}.jar:server.jar
+                 net.fabricmc.loader.impl.launch.knot.KnotServer nogui
+      - Forge:   run installer (if needed), then
+                 java -jar forge-{ver}-{forge}.jar nogui
     """
 
     directory = Path(server.directory)
-    jar_path = directory / "server.jar"
+    jar_filename = _jar_filename_for_server(server)
+    jar_path = directory / jar_filename
 
-    cmd = [
-        java_executable,
-        "-Xms512M",
-        "-Xmx1G",
-        "-jar",
-        str(jar_path),
-        "nogui",
-    ]
+    # Forge requires running the installer before first launch. The installer
+    # JAR was downloaded during software installation; running it generates
+    # forge-{version}-{forge}.jar and the libraries/ directory.
+    if server.software_type == "forge":
+        build = server.software_version
+        server_jar = _forge_server_jar(directory, server.version, build)
+        if server_jar is None:
+            # Installer has not been run yet; run it now.
+            await _run_forge_installer(directory, java_executable, jar_filename)
+            server_jar = _forge_server_jar(directory, server.version, build)
+            if server_jar is None:
+                raise DomainError(
+                    "Forge installer did not generate a server JAR. "
+                    "Installation may be incomplete."
+                )
+        jar_path = server_jar
+
+    # Fabric requires both the Fabric Loader JAR and the vanilla server JAR.
+    # The launch uses a classpath with both JARs and the Fabric main class.
+    if server.software_type == "fabric":
+        build = server.software_version
+        loader_jar = directory / f"fabric-loader-{build}.jar" if build else directory / "fabric-loader.jar"
+        server_jar = directory / "server.jar"
+        if not loader_jar.is_file():
+            raise DomainError(
+                f"Fabric Loader JAR '{loader_jar.name}' not found in {directory}. "
+                "Install software before starting."
+            )
+        if not server_jar.is_file():
+            raise DomainError(
+                f"Vanilla server JAR 'server.jar' not found in {directory}. "
+                "Install software before starting."
+            )
+        classpath = f"{loader_jar}:{server_jar}"
+        cmd = [
+            java_executable,
+            "-Xms512M",
+            "-Xmx1G",
+            "-cp",
+            classpath,
+            "net.fabricmc.loader.impl.launch.knot.KnotServer",
+            "nogui",
+        ]
+    else:
+        if not jar_path.is_file():
+            raise DomainError(
+                f"Server JAR '{jar_path.name}' not found in {directory}. "
+                "Install software before starting."
+            )
+        cmd = [
+            java_executable,
+            "-Xms512M",
+            "-Xmx1G",
+            "-jar",
+            str(jar_path),
+            "nogui",
+        ]
 
     process = await asyncio.create_subprocess_exec(
         *cmd,
@@ -591,10 +768,11 @@ async def start_server(
         if not directory.exists():
             raise NotFoundError(f"Server directory '{directory}' does not exist.")
 
-        jar_path = directory / "server.jar"
+        jar_filename = _jar_filename_for_server(server)
+        jar_path = directory / jar_filename
         if not jar_path.exists():
             raise DomainError(
-                f"Server software (server.jar) is not installed in {directory}. "
+                f"Server software ({jar_filename}) is not installed in {directory}. "
                 "Import or install software before starting."
             )
 
@@ -750,10 +928,11 @@ async def restart_server(
         if not directory.exists():
             raise NotFoundError(f"Server directory '{directory}' does not exist.")
 
-        jar_path = directory / "server.jar"
+        jar_filename = _jar_filename_for_server(server)
+        jar_path = directory / jar_filename
         if not jar_path.exists():
             raise DomainError(
-                f"Server software (server.jar) is not installed in {directory}. "
+                f"Server software ({jar_filename}) is not installed in {directory}. "
                 "Import or install software before starting."
             )
 

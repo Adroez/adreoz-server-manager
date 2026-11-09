@@ -105,6 +105,7 @@ def create_server_endpoint(
         settings=settings,
         payload=payload,
         owner=auth.user,
+        session_factory=request.app.state.session_factory,
         meta=meta,
     )
     return ServerOut.model_validate(server)

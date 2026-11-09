@@ -177,6 +177,7 @@ describe("server-create - API request body", () => {
       viewDistance: "10",
       motd: "A Minecraft server",
       javaRuntimeId: "",
+      buildVersion: null,
     });
     assert.deepEqual(body, {
       name: "hello-world",
@@ -190,6 +191,7 @@ describe("server-create - API request body", () => {
       view_distance: 10,
       motd: "A Minecraft server",
       java_runtime_id: null,
+      build_version: null,
     });
   });
 
@@ -206,8 +208,28 @@ describe("server-create - API request body", () => {
       viewDistance: "10",
       motd: "A Minecraft server",
       javaRuntimeId: "3",
+      buildVersion: null,
     });
     assert.equal(body.java_runtime_id, 3);
+    assert.equal(body.build_version, null);
+  });
+
+  it("builds the correct body with a build version", () => {
+    const body = buildCreateServerBody({
+      name: "hello-world",
+      softwareType: "paper",
+      version: "1.20.1",
+      port: "25565",
+      maxPlayers: "10",
+      onlineMode: true,
+      difficulty: "normal",
+      gamemode: "survival",
+      viewDistance: "10",
+      motd: "A Minecraft server",
+      javaRuntimeId: null,
+      buildVersion: "123",
+    });
+    assert.equal(body.build_version, "123");
   });
 
   it("trims whitespace from name and MOTD", () => {
@@ -223,6 +245,7 @@ describe("server-create - API request body", () => {
       viewDistance: "6",
       motd: "  trimmed motd  ",
       javaRuntimeId: null,
+      buildVersion: null,
     });
     assert.equal(body.name, "hello-world");
     assert.equal(body.motd, "trimmed motd");
@@ -242,6 +265,7 @@ describe("server-create - API request body", () => {
       viewDistance: "10",
       motd: "A Minecraft server",
       javaRuntimeId: null,
+      buildVersion: null,
     });
     assert.equal(body.version, "1.20.1");
   });

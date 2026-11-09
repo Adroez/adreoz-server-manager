@@ -50,6 +50,12 @@ class Server(Base):
     java_runtime_id: Mapped[int | None] = mapped_column(
         ForeignKey("java_runtimes.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Software installation state.
+    software_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    install_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending"
+    )
+    install_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     owner = relationship("User")  # noqa: F821
     java_runtime = relationship("JavaRuntime")  # noqa: F821
