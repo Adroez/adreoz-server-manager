@@ -615,23 +615,63 @@ def restart_server(
         raise DomainError(f"Cannot restart server in '{server.status}' state.")
 
     with acquire_operation_lock(server.id, OperationType.RESTART):
-        # Stop first if running.
+        # Stop first if running (inline stop logic without separate lock).
         if server.status == "running":
-            stop_server(
-                db, server=server, actor=actor,
-                process_manager=process_manager, meta=meta,
+            handle = process_manager.get(server.id)
+            if handle is not None and handle.is_running:
+                loop = asyncio.get_event_loop()
+                loop.create_task(_stop_process(process_manager, server.id))
+                server.status = "stopping"
+                record_audit(
+                    db,
+                    action="server.stopped",
+                    actor=actor,
+                    detail=f"Stop requested for server '{server.name}' (restart).",
+                    meta=meta,
+                )
+                db.commit()
+                db.refresh(server)
+
+        # Start the server (inline start logic without separate lock).
+        # Re-check state after stop.
+        if process_manager.has(server.id):
+            handle = process_manager.get(server.id)
+            if handle is not None and handle.is_running:
+                raise ConflictError(f"Server '{server.name}' is already running.")
+
+        if server.status not in ("stopped", "error", "stopping"):
+            raise DomainError(f"Cannot start server in '{server.status}' state.")
+
+        directory = Path(server.directory)
+        if not directory.exists():
+            raise NotFoundError(f"Server directory '{directory}' does not exist.")
+
+        jar_path = directory / "server.jar"
+        if not jar_path.exists():
+            raise DomainError(
+                f"Server software (server.jar) is not installed in {directory}. "
+                "Import or install software before starting."
             )
 
-        return start_server(
+        # Write server.properties before starting.
+        write_server_properties(server)
+
+        loop = asyncio.get_event_loop()
+        loop.create_task(
+            _launch_process(server, process_manager, session_factory, console_manager)
+        )
+
+        server.status = "starting"
+        record_audit(
             db,
-            server=server,
+            action="server.started",
             actor=actor,
-            process_manager=process_manager,
-            settings=settings,
-            session_factory=session_factory,
-            console_manager=console_manager,
+            detail=f"Start requested for server '{server.name}' (restart).",
             meta=meta,
         )
+        db.commit()
+        db.refresh(server)
+    return server
 
 
 def capture_log(

@@ -17,7 +17,10 @@ from app.models.server import Server
 from app.services.backup import (
     run_backup_scheduler_once,
 )
-from app.services.operations import _get_lock
+from app.services.operations import (
+    acquire_operation_lock,
+    OperationType,
+)
 from tests.conftest import ADMIN_LOGIN, PLAYER_PASSWORD, csrf_headers
 
 
@@ -500,16 +503,18 @@ def test_backup_concurrent_operation_conflict(
     server = _setup_player_and_server(client, "backupowner", "concurrent-server", 25718)
     server_id = server["id"]
 
-    lock = _get_lock(server_id)
-    assert lock.acquire(blocking=False)
+    from app.services.operations import acquire_operation_lock, OperationType
+
+    lock = acquire_operation_lock(server_id, OperationType.BACKUP_CREATE)
+    lock.__enter__()
     try:
         response = client.post(
             f"/api/servers/{server_id}/backups", headers=csrf_headers(client)
         )
         assert response.status_code == 409
-        assert "in progress" in response.json()["detail"].lower()
+        assert "busy" in response.json()["detail"].lower()
     finally:
-        lock.release()
+        lock.__exit__(None, None, None)
 
 
 # ---------------------------------------------------------------------------

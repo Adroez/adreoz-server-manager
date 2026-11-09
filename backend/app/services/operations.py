@@ -34,8 +34,8 @@ class OperationType(Enum):
     BACKUP_RESTORE = "backup_restore"
 
 
-# Exclusive operations that conflict with each other and with DELETE.
-# These require the mutex lock.
+# Exclusive operations that conflict with each other.
+# These cannot run concurrently with other exclusive operations.
 EXCLUSIVE_OPERATIONS = {
     OperationType.START,
     OperationType.RESTART,
@@ -44,8 +44,32 @@ EXCLUSIVE_OPERATIONS = {
     OperationType.BACKUP_RESTORE,
 }
 
-# STOP only conflicts with DELETE and other STOPs.
-# It does NOT conflict with START, RESTART, BACKUP_CREATE, BACKUP_RESTORE.
+# Compatibility matrix: for each operation, which other operations can run concurrently.
+# Key: operation type, Value: set of operation types that are COMPATIBLE with it.
+# If an operation is not in this set, it conflicts and cannot run concurrently.
+COMPATIBLE_WITH: dict[OperationType, set[OperationType]] = {
+    OperationType.START: {
+        OperationType.STOP,  # STOP allowed during START (to kill stuck process)
+    },
+    OperationType.STOP: {
+        OperationType.START,  # STOP allowed during START
+        OperationType.RESTART,  # STOP allowed during RESTART
+        OperationType.BACKUP_CREATE,  # STOP allowed during backup
+        OperationType.BACKUP_RESTORE,  # STOP allowed during restore
+    },
+    OperationType.RESTART: {
+        OperationType.STOP,  # STOP allowed during RESTART
+    },
+    OperationType.DELETE: {
+        # DELETE is compatible with NOTHING
+    },
+    OperationType.BACKUP_CREATE: {
+        OperationType.STOP,  # STOP allowed during backup
+    },
+    OperationType.BACKUP_RESTORE: {
+        OperationType.STOP,  # STOP allowed during restore
+    },
+}
 
 
 @dataclass
@@ -59,20 +83,10 @@ class OperationState:
     metadata: dict = field(default_factory=dict)
 
 
-# Per-server operation locks and state tracking.
-_lock_registry_guard = threading.Lock()
-_server_operation_locks: dict[int, threading.Lock] = {}
+# Per-server operation state tracking.
+# Protected by _lock_registry_guard (RLock for reentrancy).
+_lock_registry_guard = threading.RLock()
 _server_operations: dict[int, Optional[OperationState]] = {}
-
-
-def _get_lock(server_id: int) -> threading.Lock:
-    """Get or create the per-server operation lock (mutex for exclusive ops)."""
-    with _lock_registry_guard:
-        lock = _server_operation_locks.get(server_id)
-        if lock is None:
-            lock = threading.Lock()
-            _server_operation_locks[server_id] = lock
-        return lock
 
 
 def _get_current_operation(server_id: int) -> Optional[OperationState]:
@@ -81,15 +95,35 @@ def _get_current_operation(server_id: int) -> Optional[OperationState]:
         return _server_operations.get(server_id)
 
 
-def _set_current_operation(
-    server_id: int, operation: Optional[OperationState]
-) -> None:
-    """Set the current operation for a server."""
+def _has_exclusive_operation(server_id: int) -> bool:
+    """Check if there's an exclusive operation running for the server."""
     with _lock_registry_guard:
-        if operation is None:
-            _server_operations.pop(server_id, None)
-        else:
-            _server_operations[server_id] = operation
+        current = _server_operations.get(server_id)
+        return current is not None and current.operation in EXCLUSIVE_OPERATIONS
+
+
+def _check_conflicts(server_id: int, operation: OperationType) -> None:
+    """Check if the new operation conflicts with any currently running operation.
+
+    Raises ConflictError if a conflict is detected.
+    """
+    current = _get_current_operation(server_id)
+    if current is None:
+        return
+
+    # Check forward compatibility: is new operation compatible with current?
+    compatible = COMPATIBLE_WITH.get(current.operation, set())
+    if operation not in compatible:
+        raise ConflictError(
+            f"Cannot {operation.value}: server is busy with {current.operation.value}."
+        )
+
+    # Check reverse compatibility: is current operation compatible with new?
+    compatible_with_new = COMPATIBLE_WITH.get(operation, set())
+    if current.operation not in compatible_with_new:
+        raise ConflictError(
+            f"Cannot {operation.value}: server is busy with {current.operation.value}."
+        )
 
 
 @contextmanager
@@ -102,11 +136,11 @@ def acquire_operation_lock(
 ) -> Iterator[None]:
     """Acquire a per-server operation lock with conflict detection.
 
-    For exclusive operations (START, RESTART, DELETE, BACKUP_CREATE, BACKUP_RESTORE),
-    this acquires a mutex that prevents other exclusive operations from running.
+    Exclusive operations (START, RESTART, DELETE, BACKUP_CREATE, BACKUP_RESTORE)
+    cannot run concurrently with other exclusive operations.
 
-    For STOP, this uses a lighter check that only conflicts with DELETE and other STOPs.
-    STOP is allowed to proceed even when backup/restore/start/restart are running.
+    STOP is not exclusive and can run concurrently with exclusive operations,
+    but still registers itself and checks for conflicts.
 
     Args:
         server_id: The server ID to lock.
@@ -125,11 +159,10 @@ def acquire_operation_lock(
 
     is_exclusive = operation in EXCLUSIVE_OPERATIONS
 
-    if is_exclusive:
-        # Exclusive operations: acquire mutex and check conflicts.
-        lock = _get_lock(server_id)
-        if not lock.acquire(blocking=False):
-            current = _get_current_operation(server_id)
+    with _lock_registry_guard:
+        # For exclusive operations, check if another exclusive operation is running.
+        if is_exclusive and _has_exclusive_operation(server_id):
+            current = _server_operations.get(server_id)
             if current:
                 raise ConflictError(
                     f"Server is busy with {current.operation.value} "
@@ -140,13 +173,8 @@ def acquire_operation_lock(
                 "Please wait for it to finish."
             )
 
-        # Check for conflicting exclusive operations.
-        current = _get_current_operation(server_id)
-        if current and current.operation in EXCLUSIVE_OPERATIONS:
-            lock.release()
-            raise ConflictError(
-                f"Cannot {operation.value}: server is busy with {current.operation.value}."
-            )
+        # Check for conflicts with any currently running operation.
+        _check_conflicts(server_id, operation)
 
         # Register this operation.
         import time
@@ -158,49 +186,16 @@ def acquire_operation_lock(
             started_at=time.monotonic(),
             metadata=metadata or {},
         )
-        _set_current_operation(server_id, op_state)
+        _server_operations[server_id] = op_state
 
-        try:
-            yield
-        finally:
-            current = _get_current_operation(server_id)
-            if current is not None and current.owner == owner:
-                _set_current_operation(server_id, None)
-            lock.release()
-    else:
-        # STOP operation: no mutex, just check for DELETE and other STOPs.
+    try:
+        yield
+    finally:
+        # Clean up our operation state if we're still the owner.
         with _lock_registry_guard:
             current = _server_operations.get(server_id)
-            if current:
-                if current.operation == OperationType.DELETE:
-                    raise ConflictError(
-                        "Cannot stop: server is being deleted."
-                    )
-                if current.operation == OperationType.STOP:
-                    raise ConflictError(
-                        "Another stop operation is already in progress."
-                    )
-
-            # Register STOP operation.
-            import time
-
-            op_state = OperationState(
-                operation=operation,
-                server_id=server_id,
-                owner=owner,
-                started_at=time.monotonic(),
-                metadata=metadata or {},
-            )
-            _server_operations[server_id] = op_state
-
-        try:
-            yield
-        finally:
-            # Clean up our operation state if we're still the owner.
-            with _lock_registry_guard:
-                current = _server_operations.get(server_id)
-                if current is not None and current.owner == owner:
-                    _server_operations.pop(server_id, None)
+            if current is not None and current.owner == owner:
+                _server_operations.pop(server_id, None)
 
 
 def get_server_operation_status(server_id: int) -> Optional[dict]:

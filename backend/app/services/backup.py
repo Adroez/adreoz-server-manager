@@ -219,20 +219,33 @@ def _validate_member(member: tarfile.TarInfo, staging: Path) -> None:
         raise DomainError("Backup archive contains unsafe paths.") from None
 
 
-def _extract_archive(archive: Path, staging: Path) -> None:
-    """Validate and extract an archive into a staging directory.
+def _calculate_expanded_size(archive: Path) -> int:
+    """Calculate the total expanded size of regular files in an archive.
 
-    Also calculates and validates the total expanded size before extraction.
+    Validates all members first (rejecting unsafe entries) and returns
+    the sum of regular file sizes. Raises DomainError on validation failure.
     """
-
     try:
         with tarfile.open(archive, "r:gz") as tar:
             members = tar.getmembers()
-
-            # Calculate total expanded size of regular files.
             total_size = 0
             for member in members:
-                _validate_member(member, staging)
+                # Reuse validation logic but without staging path check.
+                if member.isdir() or member.isfile():
+                    pass
+                else:
+                    raise DomainError("Backup archive contains unsupported file entries.")
+
+                name = member.name
+                if not name or "\x00" in name:
+                    raise DomainError("Backup archive contains invalid paths.")
+                if os.path.isabs(name):
+                    raise DomainError("Backup archive contains absolute paths.")
+
+                parts = Path(name).parts
+                if any(part in ("..",) for part in parts):
+                    raise DomainError("Backup archive contains unsafe paths.")
+
                 if member.isfile():
                     if member.size < 0:
                         raise DomainError("Backup archive contains invalid file sizes.")
@@ -244,6 +257,22 @@ def _extract_archive(archive: Path, staging: Path) -> None:
                     f"{MAX_EXPANDED_BACKUP_SIZE // (1024**3)} GB."
                 )
 
+            return total_size
+    except tarfile.TarError as exc:
+        raise DomainError("The backup archive is corrupted or unreadable.") from exc
+
+
+def _extract_archive(archive: Path, staging: Path) -> None:
+    """Validate and extract an archive into a staging directory.
+
+    Assumes expanded size has already been validated by caller.
+    """
+
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members = tar.getmembers()
+            for member in members:
+                _validate_member(member, staging)
             # ``filter="data"`` adds defense in depth on Python 3.12+.
             tar.extractall(path=staging, members=members, filter="data")
     except tarfile.TarError as exc:
@@ -514,6 +543,9 @@ def prune_old_backups(
     """Delete the oldest backups beyond the retention limit.
 
     Only completed/failed backups belonging to ``server_id`` are eligible.
+    Archive deletion is attempted first; the database row is removed only
+    after successful archive deletion. If archive deletion fails, the row
+    is preserved and the failure is logged.
     """
 
     keep = max(1, int(max_backups))
@@ -535,10 +567,17 @@ def prune_old_backups(
                 path = _resolve_backup_path(settings, row.filename)
                 if path.exists():
                     path.unlink()
+                # Archive deleted (or didn't exist); now safe to remove the row.
+                db.delete(row)
+                removed += 1
             except (OSError, DomainError):
-                logger.exception("Failed to remove pruned backup file")
-            db.delete(row)
-            removed += 1
+                # Preserve the database row on deletion failure.
+                logger.exception(
+                    "Failed to remove pruned backup file for backup %s; "
+                    "metadata row preserved",
+                    row.id,
+                )
+                # Continue to next backup; do not delete this row.
 
         if removed:
             record_audit(
@@ -669,10 +708,13 @@ def restore_backup(
         rollback_failed = False
 
         try:
-            # Check available disk space before extraction.
+            # Validate archive and calculate expanded size before extraction.
+            expanded_size = _calculate_expanded_size(archive)
+
+            # Check available disk space against expanded size + safety margin.
             try:
                 free = shutil.disk_usage(server_dir.parent).free
-                required = FREE_SPACE_MARGIN
+                required = expanded_size + FREE_SPACE_MARGIN
                 if free < required:
                     raise DomainError(
                         "Insufficient disk space to restore this backup."
