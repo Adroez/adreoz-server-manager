@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import socket
 import uuid
@@ -21,6 +22,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import Settings
+from app.core.java import JavaRuntimeManager
 from app.core.process import ProcessManager, ProcessError
 from app.core.validation import ServerNameError, validate_server_name
 from app.models.server import Server, ServerLog
@@ -33,10 +35,9 @@ from app.schemas.server import (
     ServerUpdateRequest,
 )
 from app.services.audit import RequestMeta, record_audit
+from app.services.compat import check_compatibility
 from app.services.errors import ConflictError, DomainError, ForbiddenError, NotFoundError
 from app.services.operations import OperationType, acquire_operation_lock
-
-logger = logging.getLogger("asm.servers")
 
 # Maximum number of log lines retained per server in the database.
 MAX_LOG_LINES = 5000
@@ -144,6 +145,15 @@ def create_server(
     unique_id = str(uuid.uuid4())
     version = payload.version or _default_software_properties(payload.software_type)
 
+    # Validate the selected Java runtime, if any.
+    java_runtime_id = payload.java_runtime_id
+    if java_runtime_id is not None:
+        from app.models.java_runtime import JavaRuntime as JavaRuntimeModel
+
+        runtime = db.get(JavaRuntimeModel, java_runtime_id)
+        if runtime is None:
+            raise NotFoundError("Selected Java runtime not found.")
+
     server = Server(
         owner_id=owner.id,
         unique_id=unique_id,
@@ -159,6 +169,7 @@ def create_server(
         view_distance=payload.view_distance,
         motd=payload.motd,
         status="stopped",
+        java_runtime_id=java_runtime_id,
     )
     db.add(server)
     try:
@@ -294,6 +305,18 @@ def update_server(
         server.motd = data["motd"]
         changes.append(f"motd={data['motd']}")
 
+    if "java_runtime_id" in data:
+        new_runtime_id = data["java_runtime_id"]
+        if new_runtime_id != server.java_runtime_id:
+            if new_runtime_id is not None:
+                from app.models.java_runtime import JavaRuntime as JavaRuntimeModel
+
+                runtime = db.get(JavaRuntimeModel, new_runtime_id)
+                if runtime is None:
+                    raise NotFoundError("Java runtime not found.")
+            server.java_runtime_id = new_runtime_id
+            changes.append(f"java_runtime_id={new_runtime_id}")
+
     if not changes:
         return server
 
@@ -396,9 +419,11 @@ def write_server_properties(server: Server) -> None:
     properties_path.chmod(0o600)
 
     # Write eula.txt for all supported software types.
+    # The EULA is never auto-accepted; the server operator must review and
+    # accept Mojang's EULA manually before the server can start.
     eula_path = directory / "eula.txt"
     if not eula_path.exists():
-        eula_path.write_text("eula=true\n", encoding="utf-8")
+        eula_path.write_text("eula=false\n", encoding="utf-8")
         eula_path.chmod(0o600)
 
 
@@ -473,6 +498,7 @@ async def _launch_process(
     process_manager: ProcessManager,
     session_factory,
     console_manager=None,
+    java_executable: str = "java",
 ) -> asyncio.subprocess.Process:
     """Launch the Minecraft server Java process.
 
@@ -481,13 +507,16 @@ async def _launch_process(
 
     Exactly one reader task per stream is created by ProcessManager.register.
     A monitor task records the exit status when the process terminates.
+
+    ``java_executable`` is the resolved path to the Java binary for this
+    server's selected runtime (defaults to system ``java``).
     """
 
     directory = Path(server.directory)
     jar_path = directory / "server.jar"
 
     cmd = [
-        "java",
+        java_executable,
         "-Xms512M",
         "-Xmx1G",
         "-jar",
@@ -568,11 +597,52 @@ async def start_server(
                 "Import or install software before starting."
             )
 
+        # Resolve and validate the Java runtime for this server.
+        java_runtime_id = server.java_runtime_id
+        java_executable = "java"
+        runtime_major = None
+        if java_runtime_id is not None:
+            from app.models.java_runtime import JavaRuntime as JavaRuntimeModel
+
+            runtime = db.get(JavaRuntimeModel, java_runtime_id)
+            if runtime is None:
+                raise NotFoundError("Selected Java runtime not found.")
+            java_executable = runtime.executable_path
+            runtime_major = runtime.major_version
+            if not Path(java_executable).is_file() or not os.access(
+                java_executable, os.X_OK
+            ):
+                raise DomainError(
+                    f"Selected Java runtime '{runtime.name}' is not executable "
+                    f"at {java_executable}."
+                )
+        else:
+            # System default: validate that java is available on PATH.
+            import shutil
+
+            if shutil.which("java") is None:
+                raise DomainError(
+                    "No Java runtime is available on the system PATH. "
+                    "Install or select a Java runtime before starting."
+                )
+
+        # Check Java / Minecraft compatibility only when a specific runtime is
+        # selected. When no runtime is selected (system default), we proceed on
+        # a best-effort basis since the runtime version is unknown.
+        if java_runtime_id is not None:
+            compatibility = check_compatibility(server.version, runtime_major)
+            if not compatibility.compatible:
+                raise DomainError(compatibility.message)
+
         # Write server.properties before starting.
         write_server_properties(server)
 
         process = await _launch_process(
-            server, process_manager, session_factory, console_manager
+            server,
+            process_manager,
+            session_factory,
+            console_manager,
+            java_executable=java_executable,
         )
 
         server.status = "running"
@@ -686,11 +756,52 @@ async def restart_server(
                 "Import or install software before starting."
             )
 
+        # Resolve and validate the Java runtime for this server.
+        java_runtime_id = server.java_runtime_id
+        java_executable = "java"
+        runtime_major = None
+        if java_runtime_id is not None:
+            from app.models.java_runtime import JavaRuntime as JavaRuntimeModel
+
+            runtime = db.get(JavaRuntimeModel, java_runtime_id)
+            if runtime is None:
+                raise NotFoundError("Selected Java runtime not found.")
+            java_executable = runtime.executable_path
+            runtime_major = runtime.major_version
+            if not Path(java_executable).is_file() or not os.access(
+                java_executable, os.X_OK
+            ):
+                raise DomainError(
+                    f"Selected Java runtime '{runtime.name}' is not executable "
+                    f"at {java_executable}."
+                )
+        else:
+            # System default: validate that java is available on PATH.
+            import shutil
+
+            if shutil.which("java") is None:
+                raise DomainError(
+                    "No Java runtime is available on the system PATH. "
+                    "Install or select a Java runtime before starting."
+                )
+
+        # Check Java / Minecraft compatibility only when a specific runtime is
+        # selected. When no runtime is selected (system default), we proceed on
+        # a best-effort basis since the runtime version is unknown.
+        if java_runtime_id is not None:
+            compatibility = check_compatibility(server.version, runtime_major)
+            if not compatibility.compatible:
+                raise DomainError(compatibility.message)
+
         # Write server.properties before starting.
         write_server_properties(server)
 
         process = await _launch_process(
-            server, process_manager, session_factory, console_manager
+            server,
+            process_manager,
+            session_factory,
+            console_manager,
+            java_executable=java_executable,
         )
 
         server.status = "running"

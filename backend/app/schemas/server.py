@@ -79,6 +79,7 @@ class ServerCreateRequest(ServerBase):
     """Request to create a new Minecraft server."""
 
     directory: str | None = Field(default=None, max_length=512)
+    java_runtime_id: int | None = None
 
 
 class ServerUpdateRequest(StrictRequest):
@@ -92,6 +93,7 @@ class ServerUpdateRequest(StrictRequest):
     gamemode: str | None = None
     view_distance: int | None = Field(default=None, ge=2, le=32)
     motd: str | None = Field(default=None, min_length=1, max_length=128)
+    java_runtime_id: int | None = None
 
     @field_validator("difficulty")
     @classmethod
@@ -154,6 +156,7 @@ class ServerOut(BaseModel):
     motd: str
     status: str
     process_id: int | None
+    java_runtime_id: int | None
     created_at: UtcDateTime
     updated_at: UtcDateTime
     started_at: UtcDateTime | None

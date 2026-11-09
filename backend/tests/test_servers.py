@@ -555,3 +555,149 @@ def test_server_restart_replaces_running_process(
     )
     assert stop.status_code == 200, stop.text
     assert _wait_for_status(app, server["id"], "stopped") == "stopped"
+
+
+def _create_java_runtime(db) -> int:
+    """Insert a managed Java runtime record directly into the DB for testing."""
+
+    from app.models.java_runtime import JavaRuntime as JavaRuntimeModel
+
+    runtime = JavaRuntimeModel(
+        name="Temurin 17",
+        vendor="Eclipse Temurin",
+        version="17.0.13+11",
+        major_version=17,
+        executable_path="/home/suriya/Adreoz Server Manager/data/runtimes/temurin/bin/java",
+        source_url="https://example.com/temurin.tar.gz",
+        checksum="deadbeef",
+        checksum_algorithm="sha256",
+        install_status="installed",
+        is_managed=True,
+    )
+    db.add(runtime)
+    db.flush()
+    db.refresh(runtime)
+    return runtime.id
+
+
+def test_server_create_without_java_runtime(
+    client: TestClient, admin_ready: dict
+) -> None:
+    """Creating a server without java_runtime_id defaults to system default."""
+
+    server = _setup_player_and_server(
+        client, player_username="serverowner", server_name="no-runtime", server_port=25593
+    )
+
+    detail = client.get(f"/api/servers/{server['id']}", headers=csrf_headers(client))
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["java_runtime_id"] is None
+
+
+def test_server_create_with_valid_java_runtime(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    """Creating a server with a valid Java runtime ID persists the selection."""
+
+    with app.state.session_factory() as db:
+        runtime_id = _create_java_runtime(db)
+        db.commit()
+
+    server = _setup_player_and_server(
+        client,
+        player_username="serverowner",
+        server_name="with-runtime",
+        server_port=25594,
+    )
+
+    # Override the just-created server with a java_runtime_id via PATCH.
+    update = client.patch(
+        f"/api/servers/{server['id']}",
+        headers=csrf_headers(client),
+        json={"java_runtime_id": runtime_id},
+    )
+    assert update.status_code == 200, update.text
+    assert update.json()["java_runtime_id"] == runtime_id
+
+    detail = client.get(f"/api/servers/{server['id']}", headers=csrf_headers(client))
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["java_runtime_id"] == runtime_id
+
+
+def test_server_create_rejects_nonexistent_java_runtime(
+    client: TestClient, admin_ready: dict
+) -> None:
+    """Creating a server with a nonexistent java_runtime_id is rejected."""
+
+    server = _setup_player_and_server(
+        client, player_username="serverowner", server_name="bad-runtime", server_port=25595
+    )
+
+    update = client.patch(
+        f"/api/servers/{server['id']}",
+        headers=csrf_headers(client),
+        json={"java_runtime_id": 999999},
+    )
+    assert update.status_code == 404, update.text
+    assert "not found" in update.json()["detail"].lower()
+
+
+def test_server_start_validates_selected_runtime_exists(
+    client: TestClient, admin_ready: dict, app
+) -> None:
+    """Starting a server with a missing Java runtime fails gracefully."""
+
+    server = _setup_player_and_server(
+        client,
+        player_username="serverowner",
+        server_name="runtime-delete",
+        server_port=25596,
+    )
+
+    # Place a fake jar so start reaches runtime validation.
+    with app.state.session_factory() as db:
+        detail = db.get(Server, server["id"])
+        Path(detail.directory, "server.jar").write_bytes(b"")
+
+    # Directly exercise start_server with a mocked session that reports the
+    # selected runtime as missing.
+    from unittest.mock import patch
+
+    import asyncio
+
+    from app.services.servers import start_server
+    from app.core.process import ProcessManager
+    from app.models.java_runtime import JavaRuntime as JavaRuntimeModel
+    from app.models.user import User
+
+    process_manager = ProcessManager()
+
+    async def _run_start():
+        with app.state.session_factory() as db:
+            server_row = db.get(Server, server["id"])
+            actor = db.query(User).first()
+            server_row.java_runtime_id = 999999
+
+            original_get = type(db).get
+
+            def fake_get(entity, ident, *args, **kwargs):
+                if entity is JavaRuntimeModel:
+                    return None
+                return original_get(entity, ident, *args, **kwargs)
+
+            with patch.object(type(db), "get", fake_get):
+                try:
+                    await start_server(
+                        db,
+                        server=server_row,
+                        actor=actor,
+                        process_manager=process_manager,
+                        settings=app.state.settings,
+                        session_factory=app.state.session_factory,
+                        meta=None,
+                    )
+                    assert False, "Expected NotFoundError for missing runtime"
+                except Exception as exc:
+                    assert "not found" in str(exc).lower()
+
+    asyncio.run(_run_start())

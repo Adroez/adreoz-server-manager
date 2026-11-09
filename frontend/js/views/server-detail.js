@@ -37,8 +37,19 @@ export async function renderServerDetail(view, ctx) {
   view.replaceChildren(loadingState());
 
   let server;
+  let runtimes = [];
   try {
-    server = await api(`/servers/${serverId}`);
+    const [serverResult, runtimesResult] = await Promise.allSettled([
+      api(`/servers/${serverId}`),
+      api("/java/runtimes"),
+    ]);
+    if (serverResult.status !== "fulfilled") {
+      throw serverResult.reason;
+    }
+    server = serverResult.value;
+    if (runtimesResult.status === "fulfilled") {
+      runtimes = runtimesResult.value.items || [];
+    }
   } catch (error) {
     if (!ctx.isCurrent()) return;
     view.replaceChildren(
@@ -48,9 +59,9 @@ export async function renderServerDetail(view, ctx) {
   }
 
   if (!ctx.isCurrent()) return;
-  render(server);
+  render(server, runtimes);
 
-  function render(data) {
+  function render(data, availableRuntimes) {
     const canManage = true; // Ownership checked by backend; UI shows all controls
 
     const headerActions = [];
@@ -160,6 +171,56 @@ export async function renderServerDetail(view, ctx) {
           infoRow("Name", data.name),
           infoRow("Unique ID", data.unique_id),
           infoRow("Software", `${data.software_type} ${data.version}`),
+          infoRow(
+            "Java runtime",
+            (() => {
+              if (data.java_runtime_id === null) {
+                return "System default";
+              }
+              const rt = availableRuntimes.find((r) => r.id === data.java_runtime_id);
+              if (rt) return `${rt.name} ${rt.version}`;
+              return "Unknown runtime";
+            })()
+          ),
+          (() => {
+            if (data.status !== "stopped" && data.status !== "error") return null;
+            const select = el("select", {
+              class: "config-input",
+              id: `server-java-runtime-${data.id}`,
+            });
+            select.appendChild(
+              el("option", { value: "", text: "System default" })
+            );
+            for (const rt of availableRuntimes) {
+              select.appendChild(
+                el(
+                  "option",
+                  { value: String(rt.id), text: `${rt.name} ${rt.version}` }
+                )
+              );
+            }
+            if (data.java_runtime_id) select.value = String(data.java_runtime_id);
+            select.addEventListener("change", () => {
+              selectJavaRuntime(data.id, select.value);
+            });
+            return el(
+              "div",
+              { class: "field" },
+              el(
+                "label",
+                { attrs: { for: `server-java-runtime-${data.id}` } },
+                document.createTextNode("Select Java runtime")
+              ),
+              select,
+              el(
+                "p",
+                { class: "field-hint" },
+                document.createTextNode(
+                  "Change the Java runtime used to launch this server. Requires a restart to take effect."
+                )
+              )
+            );
+          })(),
           infoRow("Status", statusNode),
           infoRow("Port", String(data.port)),
           infoRow("Max players", String(data.max_players)),
@@ -294,9 +355,26 @@ export async function renderServerDetail(view, ctx) {
       }
       // Refresh the page data.
       const updated = await api(`/servers/${serverId}`);
-      if (ctx.isCurrent()) render(updated);
+      if (ctx.isCurrent()) render(updated, runtimes);
     } catch (error) {
       toast(error.message, "error");
+    }
+  }
+
+  async function selectJavaRuntime(serverIdValue, runtimeIdValue) {
+    const id = runtimeIdValue === "" ? null : Number(runtimeIdValue);
+    try {
+      await api(`/servers/${serverIdValue}`, {
+        method: "PATCH",
+        body: { java_runtime_id: id },
+      });
+      const label = id === null ? "System default" : "selected runtime";
+      toast(`Java runtime changed to ${label}.`);
+      // Refresh to reflect the change.
+      const updated = await api(`/servers/${serverIdValue}`);
+      if (ctx.isCurrent()) render(updated, runtimes);
+    } catch (error) {
+      toast(error.message || "Failed to change Java runtime.", "error");
     }
   }
 

@@ -47,8 +47,12 @@ class Server(Base):
     stopped_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    java_runtime_id: Mapped[int | None] = mapped_column(
+        ForeignKey("java_runtimes.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     owner = relationship("User")  # noqa: F821
+    java_runtime = relationship("JavaRuntime")  # noqa: F821
     logs = relationship(  # noqa: F821
         "ServerLog",
         back_populates="server",

@@ -23,6 +23,8 @@ from app.api.routes import (
     dashboard,
     files,
     health,
+    java_runtimes,
+    minecraft_versions,
     servers,
     setup,
     users,
@@ -194,6 +196,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(backups.router, prefix=api_prefix)
     app.include_router(files.router, prefix=api_prefix)
     app.include_router(consoles.router, prefix=api_prefix)
+    app.include_router(java_runtimes.router, prefix=api_prefix)
+    app.include_router(minecraft_versions.router, prefix=api_prefix)
 
     if settings.frontend_dir.is_dir():
         app.mount(

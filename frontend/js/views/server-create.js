@@ -24,6 +24,68 @@ const SOFTWARE_TYPES = [
   { value: "forge", label: "Forge", hint: "Classic modded server loader" },
 ];
 
+// Validates create-server form inputs. Returns an error message string, or
+// null when all inputs are valid. Kept separate from the view so it can be
+// unit-tested without a DOM.
+export function validateCreateServerInputs({
+  name,
+  port,
+  maxPlayers,
+  viewDistance,
+  motd,
+}) {
+  if (!name || !name.trim()) {
+    return "Choose a server name.";
+  }
+  const portValue = Number(port);
+  if (!Number.isInteger(portValue) || portValue < 1024 || portValue > 65535) {
+    return "Port must be between 1024 and 65535.";
+  }
+  const maxPlayersValue = Number(maxPlayers);
+  if (!Number.isInteger(maxPlayersValue) || maxPlayersValue < 1 || maxPlayersValue > 1000) {
+    return "Max players must be between 1 and 1000.";
+  }
+  const viewDistanceValue = Number(viewDistance);
+  if (!Number.isInteger(viewDistanceValue) || viewDistanceValue < 2 || viewDistanceValue > 32) {
+    return "View distance must be between 2 and 32.";
+  }
+  const motdValue = String(motd).trim();
+  if (!motdValue || motdValue.length > 128) {
+    return "MOTD must be between 1 and 128 characters.";
+  }
+  return null;
+}
+
+// Builds the API request body for creating a server. Exported so it can be
+// unit-tested without a DOM.
+export function buildCreateServerBody({
+  name,
+  softwareType,
+  version,
+  port,
+  maxPlayers,
+  onlineMode,
+  difficulty,
+  gamemode,
+  viewDistance,
+  motd,
+  javaRuntimeId,
+}) {
+  return {
+    name: name.trim(),
+    software_type: softwareType,
+    version: version.trim() || "1.20.1",
+    port: Number(port),
+    max_players: Number(maxPlayers),
+    online_mode: Boolean(onlineMode),
+    difficulty,
+    gamemode,
+    view_distance: Number(viewDistance),
+    motd: motd.trim(),
+    java_runtime_id: javaRuntimeId === "" || javaRuntimeId == null ? null : Number(javaRuntimeId),
+  };
+}
+
 export async function renderCreateServer(view, ctx) {
   view.replaceChildren(loadingState());
 
@@ -58,6 +120,42 @@ export async function renderCreateServer(view, ctx) {
     value: "1.20.1",
     hint: "Version will be validated when the server is installed.",
   });
+  const javaRuntimeSelect = el("select", {
+    class: "select",
+    id: "create-server-java-runtime",
+  });
+  javaRuntimeSelect.appendChild(
+    el("option", { value: "", text: "System default" })
+  );
+  let javaRuntimes = [];
+  try {
+    const data = await api("/java/runtimes");
+    javaRuntimes = data.items || [];
+  } catch {
+    // Runtimes are optional at creation; system default is always available.
+  }
+  for (const rt of javaRuntimes) {
+    javaRuntimeSelect.appendChild(
+      el("option", { value: String(rt.id), text: `${rt.name} ${rt.version}` })
+    );
+  }
+  const javaRuntimeField = el(
+    "div",
+    { class: "field" },
+    el(
+      "label",
+      { attrs: { for: "create-server-java-runtime" } },
+      document.createTextNode("Java runtime")
+    ),
+    javaRuntimeSelect,
+    el(
+      "p",
+      { class: "field-hint" },
+      document.createTextNode(
+        "Java runtime used to launch the server. System default if none selected."
+      )
+    )
+  );
   const port = makeField({
     id: "create-server-port",
     label: "Port",
@@ -140,22 +238,6 @@ export async function renderCreateServer(view, ctx) {
     hint: "Message of the day shown in the server list (1–128 characters).",
   });
 
-  const form = el(
-    "form",
-    { class: "form-grid", novalidate: true },
-    errorBox,
-    name.field,
-    softwareField,
-    version.field,
-    port.field,
-    maxPlayers.field,
-    difficultyField,
-    gamemodeField,
-    viewDistance.field,
-    onlineModeField,
-    motd.field
-  );
-
   const submit = el(
     "button",
     { class: "btn btn-primary", type: "submit" },
@@ -174,44 +256,42 @@ export async function renderCreateServer(view, ctx) {
     document.createTextNode("Cancel")
   );
 
-  const footer = el(
-    "div",
-    { class: "form-actions" },
-    cancel,
-    submit
+  const form = el(
+    "form",
+    { class: "form-grid", novalidate: true },
+    errorBox,
+    name.field,
+    softwareField,
+    version.field,
+    javaRuntimeField,
+    port.field,
+    maxPlayers.field,
+    difficultyField,
+    gamemodeField,
+    viewDistance.field,
+    onlineModeField,
+    motd.field,
+    el(
+      "div",
+      { class: "form-actions" },
+      cancel,
+      submit
+    )
   );
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     clearFormError(errorBox);
 
-    const nameValue = name.input.value.trim();
-    if (!nameValue) {
-      showFormError(errorBox, "Choose a server name.");
-      return;
-    }
-
-    const portValue = Number(port.input.value);
-    if (!Number.isInteger(portValue) || portValue < 1024 || portValue > 65535) {
-      showFormError(errorBox, "Port must be between 1024 and 65535.");
-      return;
-    }
-
-    const maxPlayersValue = Number(maxPlayers.input.value);
-    if (!Number.isInteger(maxPlayersValue) || maxPlayersValue < 1 || maxPlayersValue > 1000) {
-      showFormError(errorBox, "Max players must be between 1 and 1000.");
-      return;
-    }
-
-    const viewDistanceValue = Number(viewDistance.input.value);
-    if (!Number.isInteger(viewDistanceValue) || viewDistanceValue < 2 || viewDistanceValue > 32) {
-      showFormError(errorBox, "View distance must be between 2 and 32.");
-      return;
-    }
-
-    const motdValue = motd.input.value.trim();
-    if (!motdValue || motdValue.length > 128) {
-      showFormError(errorBox, "MOTD must be between 1 and 128 characters.");
+    const error = validateCreateServerInputs({
+      name: name.input.value,
+      port: port.input.value,
+      maxPlayers: maxPlayers.input.value,
+      viewDistance: viewDistance.input.value,
+      motd: motd.input.value,
+    });
+    if (error) {
+      showFormError(errorBox, error);
       return;
     }
 
@@ -219,18 +299,19 @@ export async function renderCreateServer(view, ctx) {
     try {
       const created = await api("/servers", {
         method: "POST",
-        body: {
-          name: nameValue,
-          software_type: softwareSelect.value,
-          version: version.input.value.trim() || "1.20.1",
-          port: portValue,
-          max_players: maxPlayersValue,
-          online_mode: onlineMode.checked,
+        body: buildCreateServerBody({
+          name: name.input.value,
+          softwareType: softwareSelect.value,
+          version: version.input.value,
+          port: port.input.value,
+          maxPlayers: maxPlayers.input.value,
+          onlineMode: onlineMode.checked,
           difficulty: difficultySelect.value,
           gamemode: gamemodeSelect.value,
-          view_distance: viewDistanceValue,
-          motd: motdValue,
-        },
+          viewDistance: viewDistance.input.value,
+          motd: motd.input.value,
+          javaRuntimeId: javaRuntimeSelect.value,
+        }),
       });
       toast(`Created ${created.name}.`);
       window.location.hash = `#/servers/${created.id}`;
@@ -250,7 +331,7 @@ export async function renderCreateServer(view, ctx) {
         description:
           "Set up a new Minecraft server. Server software is not installed automatically; place server.jar in the server directory before starting.",
       }),
-      el("div", { class: "card" }, el("div", { class: "card-body" }, form), footer)
+      el("div", { class: "card" }, el("div", { class: "card-body" }, form))
     )
   );
 }

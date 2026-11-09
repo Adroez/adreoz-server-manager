@@ -8,7 +8,9 @@ import { icon } from "./components/icons.js";
 import { toast } from "./components/toast.js";
 import { renderAccount } from "./views/account.js";
 import { renderDashboard } from "./views/dashboard.js";
+import { renderJavaRuntimes } from "./views/java-runtimes.js";
 import { renderLogin } from "./views/login.js";
+import { renderMinecraftVersions } from "./views/minecraft-versions.js";
 import { renderNotFound } from "./views/notfound.js";
 import { renderCreateServer } from "./views/server-create.js";
 import { renderBackups } from "./views/backups.js";
@@ -87,6 +89,22 @@ const ROUTES = [
     group: "Workspace",
     icon: "terminal",
     render: renderServerConsole,
+  },
+  {
+    path: "/java/runtimes",
+    title: "Java runtimes",
+    group: "Administration",
+    icon: "cpu",
+    admin: true,
+    render: renderJavaRuntimes,
+  },
+  {
+    path: "/minecraft/versions",
+    title: "Minecraft versions",
+    group: "Administration",
+    icon: "server",
+    admin: true,
+    render: renderMinecraftVersions,
   },
   {
     path: "/users",
