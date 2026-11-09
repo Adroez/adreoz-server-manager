@@ -1,14 +1,11 @@
 /* Server console page — live WebSocket console for Minecraft servers. */
 
 import { api } from "../core/api.js";
-import { el, setBusy } from "../core/dom.js";
-import { formatDateTime, relativeTime } from "../core/format.js";
-import { getState } from "../core/store.js";
+import { el } from "../core/dom.js";
 import { icon } from "../components/icons.js";
 import { toast } from "../components/toast.js";
 import {
   actionButton,
-  emptyState,
   errorState,
   loadingState,
   pageHeader,
@@ -29,8 +26,7 @@ export async function renderServerConsole(view, ctx) {
   // Extract server ID from hash: #/servers/123/console or #/servers/123
   const hash = window.location.hash.slice(1);
   const parts = hash.split("/");
-  const serverId = Number(parts[1]);
-  const isConsoleTab = parts[2] === "console";
+  const serverId = Number(parts[2]);
 
   if (!Number.isInteger(serverId)) {
     view.replaceChildren(
@@ -53,60 +49,50 @@ export async function renderServerConsole(view, ctx) {
   }
 
   if (!ctx.isCurrent()) return;
-  render(server);
 
   // --- Console state ---
   let ws = null;
   let wsReconnectTimer = null;
   let wsConnected = false;
   let wsReconnecting = false;
+  let disposed = false;
   let autoScroll = true;
   let logLines = []; // { stream, line, time }
   let renderScheduled = false;
 
-  const statusNode = el(
-    "span",
-    { class: STATUS_BADGE[server.status] || "badge" },
-    el("span", {
-      class: "status-dot",
-      attrs: {
-        "aria-hidden": "true",
-        class: server.status === "running" ? "" : " is-offline",
-      },
-    }),
-    document.createTextNode(
-      server.status.charAt(0).toUpperCase() + server.status.slice(1)
-    )
-  );
+  const statusNode = el("span", { class: "badge" });
 
-  const headerActions = [];
-  if (server.status === "running") {
-    headerActions.push(
-      actionButton({
-        label: "Stop",
-        iconName: "power",
-        variant: "danger",
-        handler: () => changeStatus("stop"),
-      })
-    );
-  } else {
-    headerActions.push(
-      actionButton({
-        label: server.status === "error" ? "Retry" : "Start",
-        iconName: "power",
-        handler: () => changeStatus("start"),
-      })
-    );
-  }
-  if (server.status === "stopped" || server.status === "error") {
-    headerActions.push(
-      actionButton({
-        label: "Delete",
-        iconName: "trash",
-        variant: "danger",
-        handler: () => deleteServer(server),
-      })
-    );
+  function buildHeaderActions(data) {
+    const headerActions = [];
+    if (data.status === "running") {
+      headerActions.push(
+        actionButton({
+          label: "Stop",
+          iconName: "power",
+          variant: "danger",
+          handler: () => changeStatus("stop"),
+        })
+      );
+    } else {
+      headerActions.push(
+        actionButton({
+          label: data.status === "error" ? "Retry" : "Start",
+          iconName: "power",
+          handler: () => changeStatus("start"),
+        })
+      );
+    }
+    if (data.status === "stopped" || data.status === "error") {
+      headerActions.push(
+        actionButton({
+          label: "Delete",
+          iconName: "trash",
+          variant: "danger",
+          handler: () => deleteServer(data),
+        })
+      );
+    }
+    return headerActions;
   }
 
   const connectionStatus = el(
@@ -180,14 +166,13 @@ export async function renderServerConsole(view, ctx) {
   );
 
   function render(data) {
+    const headerActions = buildHeaderActions(data);
+
+    statusNode.className = STATUS_BADGE[data.status] || "badge";
     statusNode.replaceChildren(
-      el("span", { class: STATUS_BADGE[data.status] || "badge" }),
       el("span", {
-        class: "status-dot",
-        attrs: {
-          "aria-hidden": "true",
-          class: data.status === "running" ? "" : " is-offline",
-        },
+        class: `status-dot${data.status === "running" ? "" : " is-offline"}`,
+        attrs: { "aria-hidden": "true" },
       }),
       document.createTextNode(
         data.status.charAt(0).toUpperCase() + data.status.slice(1)
@@ -217,7 +202,7 @@ export async function renderServerConsole(view, ctx) {
             "div",
             { class: "console-meta" },
             el("span", { text: `${data.software_type} ${data.version}` }),
-            el("span", { text: statusNode }),
+            statusNode,
             connectionStatus
           )
         ),
@@ -261,7 +246,7 @@ export async function renderServerConsole(view, ctx) {
   // --- WebSocket connection ---
 
   function connectWebSocket() {
-    if (wsReconnecting) return;
+    if (wsReconnecting || disposed) return;
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/api/servers/${serverId}/console`;
 
@@ -292,6 +277,7 @@ export async function renderServerConsole(view, ctx) {
 
     ws.onclose = () => {
       wsConnected = false;
+      if (disposed) return;
       updateConnectionUI(false);
       commandInput.disabled = true;
       sendButton.disabled = true;
@@ -303,6 +289,7 @@ export async function renderServerConsole(view, ctx) {
 
     ws.onerror = () => {
       wsConnected = false;
+      if (disposed) return;
       updateConnectionUI(false);
       if (!wsReconnecting) {
         scheduleReconnect();
@@ -339,17 +326,18 @@ export async function renderServerConsole(view, ctx) {
   }
 
   function scheduleReconnect() {
-    if (wsReconnecting) return;
+    if (wsReconnecting || disposed) return;
     wsReconnecting = true;
     reconnectButton.style.display = "inline-block";
     wsReconnectTimer = window.setTimeout(() => {
       wsReconnecting = false;
       wsReconnectTimer = null;
-      connectWebSocket();
+      if (!disposed) connectWebSocket();
     }, 3000);
   }
 
   function disconnectWebSocket() {
+    disposed = true;
     if (wsReconnectTimer) {
       window.clearTimeout(wsReconnectTimer);
       wsReconnectTimer = null;
@@ -400,11 +388,11 @@ export async function renderServerConsole(view, ctx) {
         "div",
         {
           class: `console-line console-${entry.stream}`,
-          attrs: { "aria-label": `${entry.stream}: ${escapeHtml(entry.line)}` },
+          attrs: { "aria-label": `${entry.stream}: ${entry.line}` },
         },
         el("span", { class: "console-time", text: formatLogTime(entry.time) }),
         el("span", { class: "console-stream", text: entry.stream.toUpperCase() }),
-        el("span", { class: "console-text", text: escapeHtml(entry.line) })
+        el("span", { class: "console-text", text: entry.line })
       );
       fragment.appendChild(lineNode);
     }
@@ -413,12 +401,6 @@ export async function renderServerConsole(view, ctx) {
     if (autoScroll || atBottom) {
       scrollToBottom();
     }
-  }
-
-  function escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
   }
 
   function formatLogTime(iso) {
@@ -597,15 +579,9 @@ export async function renderServerConsole(view, ctx) {
 
   // --- Lifecycle ---
 
+  render(server);
   connectWebSocket();
 
   // Cleanup when the route changes.
-  const originalIsCurrent = ctx.isCurrent;
-  ctx.isCurrent = () => {
-    if (!originalIsCurrent()) {
-      disconnectWebSocket();
-      return false;
-    }
-    return true;
-  };
+  ctx.onCleanup(disconnectWebSocket);
 }

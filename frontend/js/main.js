@@ -125,9 +125,24 @@ let shell = null;
 let renderId = 0;
 let logoutInFlight = false;
 let loginInFlight = false;
+let routeCleanups = [];
+
+function runRouteCleanups() {
+  const cleanups = routeCleanups;
+  routeCleanups = [];
+  for (const cleanup of cleanups.reverse()) {
+    try {
+      cleanup();
+    } catch (error) {
+      console.error("Route cleanup failed", error);
+    }
+  }
+}
 
 function normalizePath(hash) {
   let path = (hash || "").replace(/^#/, "");
+  const queryIndex = path.indexOf("?");
+  if (queryIndex >= 0) path = path.slice(0, queryIndex);
   if (!path) return "/overview";
   if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
   return path;
@@ -172,6 +187,7 @@ function resolveRoute() {
 }
 
 function resetShell({ clearHash = false } = {}) {
+  runRouteCleanups();
   shell = null;
   renderId += 1;
   document.body.classList.remove("sidebar-open");
@@ -284,11 +300,16 @@ async function renderRoute() {
     return;
   }
 
+  runRouteCleanups();
+
   const currentShell = ensureShell();
   const currentRender = ++renderId;
   currentShell.setRoute(route);
   const context = {
     isCurrent: () => currentRender === renderId && Boolean(getState().user),
+    onCleanup: (fn) => {
+      if (typeof fn === "function") routeCleanups.push(fn);
+    },
   };
 
   try {

@@ -167,7 +167,7 @@ def delete_server_endpoint(
 
 
 @router.post("/{server_id}/start", response_model=ServerActionResponse)
-def start_server_endpoint(
+async def start_server_endpoint(
     server_id: int,
     request: Request,
     auth: Annotated[AuthContext, Depends(require_csrf)],
@@ -181,7 +181,7 @@ def start_server_endpoint(
     process_manager = _get_process_manager(settings)
     console_manager = _get_console_manager(settings)
 
-    _start_server(
+    await _start_server(
         db,
         server=server,
         actor=auth.user,
@@ -198,7 +198,7 @@ def start_server_endpoint(
 
 
 @router.post("/{server_id}/stop", response_model=ServerActionResponse)
-def stop_server_endpoint(
+async def stop_server_endpoint(
     server_id: int,
     request: Request,
     auth: Annotated[AuthContext, Depends(require_csrf)],
@@ -211,7 +211,7 @@ def stop_server_endpoint(
 
     process_manager = _get_process_manager(settings)
 
-    _stop_server(
+    await _stop_server(
         db,
         server=server,
         actor=auth.user,
@@ -225,7 +225,7 @@ def stop_server_endpoint(
 
 
 @router.post("/{server_id}/restart", response_model=ServerActionResponse)
-def restart_server_endpoint(
+async def restart_server_endpoint(
     server_id: int,
     request: Request,
     auth: Annotated[AuthContext, Depends(require_csrf)],
@@ -239,7 +239,7 @@ def restart_server_endpoint(
     process_manager = _get_process_manager(settings)
     console_manager = _get_console_manager(settings)
 
-    _restart_server(
+    await _restart_server(
         db,
         server=server,
         actor=auth.user,

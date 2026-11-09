@@ -427,18 +427,60 @@ def _validate_property_value(
             raise DomainError(f"{key} must be at most {max_v}.")
 
 
+async def _monitor_process(
+    server_id: int,
+    process: asyncio.subprocess.Process,
+    process_manager: ProcessManager,
+    session_factory,
+) -> None:
+    """Update the database when a launched process exits.
+
+    The check against the currently registered handle prevents an old monitor
+    from overwriting state after a restart has already registered a new
+    process for the same server.
+    """
+
+    try:
+        returncode = await process.wait()
+    except Exception:  # pragma: no cover - monitor resilience
+        logger.exception("Failed to monitor process for server %s", server_id)
+        return
+
+    handle = process_manager.get(server_id)
+    if handle is not None and handle.process is not process:
+        return
+
+    if handle is not None:
+        handle.exit_code = returncode
+        handle.terminated = True
+    process_manager.unregister(server_id)
+
+    try:
+        with session_factory() as db:
+            server = db.get(Server, server_id)
+            if server is None:
+                return
+            server.status = "stopped" if returncode == 0 else "error"
+            server.process_id = None
+            server.stopped_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            db.commit()
+    except Exception:  # pragma: no cover - monitor resilience
+        logger.exception("Failed to record exit for server %s", server_id)
+
+
 async def _launch_process(
     server: Server,
     process_manager: ProcessManager,
     session_factory,
     console_manager=None,
-) -> None:
+) -> asyncio.subprocess.Process:
     """Launch the Minecraft server Java process.
 
     Captures stdout/stderr to the database via :func:`capture_log` and
     broadcasts live output to WebSocket console clients via ``console_manager``.
 
     Exactly one reader task per stream is created by ProcessManager.register.
+    A monitor task records the exit status when the process terminates.
     """
 
     directory = Path(server.directory)
@@ -471,8 +513,7 @@ async def _launch_process(
         # Broadcast to WebSocket console clients.
         if console_manager is not None:
             try:
-                # Schedule broadcast on the event loop.
-                asyncio.get_event_loop().create_task(
+                asyncio.create_task(
                     console_manager.broadcast(server_id, stream_name, text)
                 )
             except Exception:  # pragma: no cover - broadcast resilience
@@ -481,9 +522,13 @@ async def _launch_process(
                 )
 
     process_manager.register(server.id, process, output_callback=output_callback)
+    asyncio.create_task(
+        _monitor_process(server.id, process, process_manager, session_factory)
+    )
+    return process
 
 
-def start_server(
+async def start_server(
     db: Session,
     *,
     server: Server,
@@ -526,12 +571,14 @@ def start_server(
         # Write server.properties before starting.
         write_server_properties(server)
 
-        loop = asyncio.get_event_loop()
-        loop.create_task(
-            _launch_process(server, process_manager, session_factory, console_manager)
+        process = await _launch_process(
+            server, process_manager, session_factory, console_manager
         )
 
-        server.status = "starting"
+        server.status = "running"
+        server.process_id = process.pid
+        server.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        server.stopped_at = None
         record_audit(
             db,
             action="server.started",
@@ -548,7 +595,7 @@ async def _stop_process(process_manager: ProcessManager, server_id: int) -> int:
     return await process_manager.stop(server_id)
 
 
-def stop_server(
+async def stop_server(
     db: Session,
     *,
     server: Server,
@@ -568,6 +615,7 @@ def stop_server(
     with acquire_operation_lock(server.id, OperationType.STOP):
         handle = process_manager.get(server.id)
         if handle is None or not handle.is_running:
+            process_manager.unregister(server.id)
             server.status = "stopped"
             server.process_id = None
             server.stopped_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -575,8 +623,9 @@ def stop_server(
             db.refresh(server)
             return server
 
-        loop = asyncio.get_event_loop()
-        # Schedule the async stop; we don't block the route handler on it.
+        # Schedule the async stop; the process monitor records the final
+        # stopped/error state once the process exits.
+        loop = asyncio.get_running_loop()
         loop.create_task(_stop_process(process_manager, server.id))
 
         server.status = "stopping"
@@ -592,7 +641,7 @@ def stop_server(
         return server
 
 
-def restart_server(
+async def restart_server(
     db: Session,
     *,
     server: Server,
@@ -611,36 +660,20 @@ def restart_server(
 
     _check_server_access(server, actor)
 
-    if server.status not in ("running", "stopped", "error"):
+    if server.status not in ("running", "stopped", "error", "starting", "stopping"):
         raise DomainError(f"Cannot restart server in '{server.status}' state.")
 
     with acquire_operation_lock(server.id, OperationType.RESTART):
-        # Stop first if running (inline stop logic without separate lock).
-        if server.status == "running":
-            handle = process_manager.get(server.id)
-            if handle is not None and handle.is_running:
-                loop = asyncio.get_event_loop()
-                loop.create_task(_stop_process(process_manager, server.id))
-                server.status = "stopping"
-                record_audit(
-                    db,
-                    action="server.stopped",
-                    actor=actor,
-                    detail=f"Stop requested for server '{server.name}' (restart).",
-                    meta=meta,
-                )
-                db.commit()
-                db.refresh(server)
-
-        # Start the server (inline start logic without separate lock).
-        # Re-check state after stop.
+        # Stop any tracked process and wait for it to exit before launching a
+        # replacement. The monitor task is superseded by the new handle.
+        handle = process_manager.get(server.id)
+        if handle is not None and handle.is_running:
+            await process_manager.stop(server.id)
         if process_manager.has(server.id):
-            handle = process_manager.get(server.id)
-            if handle is not None and handle.is_running:
-                raise ConflictError(f"Server '{server.name}' is already running.")
+            process_manager.unregister(server.id)
 
-        if server.status not in ("stopped", "error", "stopping"):
-            raise DomainError(f"Cannot start server in '{server.status}' state.")
+        server.status = "stopped"
+        server.process_id = None
 
         directory = Path(server.directory)
         if not directory.exists():
@@ -656,12 +689,14 @@ def restart_server(
         # Write server.properties before starting.
         write_server_properties(server)
 
-        loop = asyncio.get_event_loop()
-        loop.create_task(
-            _launch_process(server, process_manager, session_factory, console_manager)
+        process = await _launch_process(
+            server, process_manager, session_factory, console_manager
         )
 
-        server.status = "starting"
+        server.status = "running"
+        server.process_id = process.pid
+        server.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        server.stopped_at = None
         record_audit(
             db,
             action="server.started",

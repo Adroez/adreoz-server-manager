@@ -1,12 +1,11 @@
 /* Server configuration editor — server.properties editor. */
 
 import { api } from "../core/api.js";
-import { el, setBusy } from "../core/dom.js";
+import { el } from "../core/dom.js";
 import { icon } from "../components/icons.js";
 import { toast } from "../components/toast.js";
 import {
   actionButton,
-  emptyState,
   errorState,
   loadingState,
   pageHeader,
@@ -18,7 +17,7 @@ export async function renderServerConfig(view, ctx) {
   // Extract server ID from hash: #/servers/123/config
   const hash = window.location.hash.slice(1);
   const parts = hash.split("/");
-  const serverId = Number(parts[1]);
+  const serverId = Number(parts[2]);
 
   if (!Number.isInteger(serverId)) {
     view.replaceChildren(
@@ -41,7 +40,6 @@ export async function renderServerConfig(view, ctx) {
   }
 
   if (!ctx.isCurrent()) return;
-  render(server);
 
   // --- Config state ---
   let originalProperties = {};
@@ -121,9 +119,13 @@ export async function renderServerConfig(view, ctx) {
 
     view.replaceChildren(el("div", { class: "stack-md" }, ...sections));
 
-    // Load validation info and properties.
-    loadValidationInfo();
-    loadProperties();
+    // Load validation info before properties so enum options exist.
+    loadInitialData();
+  }
+
+  async function loadInitialData() {
+    await loadValidationInfo();
+    await loadProperties();
   }
 
   async function loadValidationInfo() {
@@ -271,7 +273,7 @@ export async function renderServerConfig(view, ctx) {
     } catch (error) {
       if (error.status === 409) {
         toast(
-          "Conflict: Another user has modified the server configuration. "
+          "Conflict: Another user has modified the server configuration. " +
           "Reload and try again.",
           "error"
         );
@@ -298,13 +300,9 @@ export async function renderServerConfig(view, ctx) {
     }
   };
   window.addEventListener("beforeunload", beforeUnloadHandler);
+  ctx.onCleanup(() => {
+    window.removeEventListener("beforeunload", beforeUnloadHandler);
+  });
 
-  const originalIsCurrent = ctx.isCurrent;
-  ctx.isCurrent = () => {
-    if (!originalIsCurrent()) {
-      window.removeEventListener("beforeunload", beforeUnloadHandler);
-      return false;
-    }
-    return true;
-  };
+  render(server);
 }

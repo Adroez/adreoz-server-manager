@@ -197,11 +197,8 @@ export async function renderServers(view, ctx) {
             class: STATUS_BADGE[item.status] || "badge",
           },
           el("span", {
-            class: "status-dot",
-            attrs: {
-              "aria-hidden": "true",
-              class: item.status === "running" ? "" : " is-offline",
-            },
+            class: `status-dot${item.status === "running" ? "" : " is-offline"}`,
+            attrs: { "aria-hidden": "true" },
           }),
           document.createTextNode(item.status.charAt(0).toUpperCase() + item.status.slice(1))
         )

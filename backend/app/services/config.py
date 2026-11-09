@@ -29,7 +29,6 @@ ALLOWED_VALUES = {
     "enable-command-block": ("true", "false"),
     "enable-query": ("true", "false"),
     "enable-rcon": ("true", "false"),
-    "hardcore": ("true", "false"),
     "generate-structures": ("true", "false"),
     "max-players": ("int", 1, 1000),
     "view-distance": ("int", 2, 32),

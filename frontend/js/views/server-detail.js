@@ -1,13 +1,12 @@
 /* Server details page. */
 
 import { api } from "../core/api.js";
-import { el, setBusy } from "../core/dom.js";
-import { formatDateTime, relativeTime } from "../core/format.js";
+import { el } from "../core/dom.js";
+import { formatDateTime } from "../core/format.js";
 import { icon } from "../components/icons.js";
 import { toast } from "../components/toast.js";
 import {
   actionButton,
-  emptyState,
   errorState,
   infoRow,
   loadingState,
@@ -26,8 +25,7 @@ export async function renderServerDetail(view, ctx) {
   // Extract server ID from hash: #/servers/123
   const hash = window.location.hash.slice(1);
   const parts = hash.split("/");
-  const serverId = Number(parts[1]);
-  const tab = parts[3] || "details";
+  const serverId = Number(parts[2]);
 
   if (!Number.isInteger(serverId)) {
     view.replaceChildren(
@@ -127,11 +125,8 @@ export async function renderServerDetail(view, ctx) {
         class: STATUS_BADGE[data.status] || "badge",
       },
       el("span", {
-        class: "status-dot",
-        attrs: {
-          "aria-hidden": "true",
-          class: data.status === "running" ? "" : " is-offline",
-        },
+        class: `status-dot${data.status === "running" ? "" : " is-offline"}`,
+        attrs: { "aria-hidden": "true" },
       }),
       document.createTextNode(
         data.status.charAt(0).toUpperCase() + data.status.slice(1)
@@ -174,7 +169,6 @@ export async function renderServerDetail(view, ctx) {
           infoRow("View distance", String(data.view_distance)),
           infoRow("MOTD", data.motd),
           infoRow("Directory", data.directory),
-          infoRow("Owner", `User ${data.owner_id}`),
           infoRow("Created", formatDateTime(data.created_at)),
           data.started_at
             ? infoRow("Started", formatDateTime(data.started_at))
@@ -290,13 +284,13 @@ export async function renderServerDetail(view, ctx) {
     try {
       if (action === "start") {
         await api(`/servers/${serverId}/start`, { method: "POST" });
-        toast(`Starting ${data.name}…`, "info");
+        toast(`Starting ${server.name}…`, "info");
       } else if (action === "stop") {
         await api(`/servers/${serverId}/stop`, { method: "POST" });
-        toast(`Stopping ${data.name}…`, "info");
+        toast(`Stopping ${server.name}…`, "info");
       } else {
         await api(`/servers/${serverId}/restart`, { method: "POST" });
-        toast(`Restarting ${data.name}…`, "info");
+        toast(`Restarting ${server.name}…`, "info");
       }
       // Refresh the page data.
       const updated = await api(`/servers/${serverId}`);

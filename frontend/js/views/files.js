@@ -1,8 +1,9 @@
 /* Server file manager view. */
 
 import { api } from "../core/api.js";
-import { el, setBusy } from "../core/dom.js";
-import { formatDateTime, relativeTime } from "../core/format.js";
+import { el } from "../core/dom.js";
+import { getState } from "../core/store.js";
+import { relativeTime } from "../core/format.js";
 import { icon } from "../components/icons.js";
 import { toast } from "../components/toast.js";
 import { confirmDialog } from "../components/modal.js";
@@ -23,7 +24,10 @@ export async function renderFileManager(view, ctx) {
   // Extract server ID from hash: #/servers/123/files or #/servers/123/files/
   const hash = window.location.hash.slice(1);
   const parts = hash.split("/");
-  const serverId = Number(parts[1]);
+  const serverId = Number(parts[2]);
+  const queryStart = hash.indexOf("?");
+  const query = queryStart >= 0 ? hash.slice(queryStart + 1) : "";
+  const initialPath = new URLSearchParams(query).get("path") || "";
 
   if (!Number.isInteger(serverId)) {
     view.replaceChildren(
@@ -44,9 +48,6 @@ export async function renderFileManager(view, ctx) {
     );
     return;
   }
-
-  if (!ctx.isCurrent()) return;
-  render(server);
 
   // --- File manager state ---
   let currentPath = "";
@@ -76,7 +77,7 @@ export async function renderFileManager(view, ctx) {
     class: "input",
     id: "file-upload-input",
     type: "file",
-    attrs: { multiple: true },
+    attrs: { multiple: true, hidden: true },
   });
   const uploadButton = el(
     "button",
@@ -135,6 +136,10 @@ export async function renderFileManager(view, ctx) {
     document.createTextNode("Back to server")
   );
 
+  if (!ctx.isCurrent()) return;
+
+  render(server);
+
   function render(data) {
     const headerActions = [];
     headerActions.push(
@@ -160,6 +165,7 @@ export async function renderFileManager(view, ctx) {
             newFolderButton,
             newFileButton,
             uploadButton,
+            uploadInput,
             backButton
           )
         ],
@@ -179,8 +185,8 @@ export async function renderFileManager(view, ctx) {
 
     view.replaceChildren(el("div", { class: "stack-md" }, ...sections));
 
-    // Load the root directory.
-    loadDirectory("");
+    // Load the requested directory (or the root).
+    loadDirectory(initialPath);
   }
 
   function updateBreadcrumbs(path) {
@@ -397,18 +403,9 @@ export async function renderFileManager(view, ctx) {
 
   // --- Actions ---
 
-  async function viewFile(name) {
+  function viewFile(name) {
     const nextPath = currentPath ? `${currentPath}/${name}` : name;
-
-    try {
-      const data = await api(`/servers/${serverId}/files/read?fp=${encodeURIComponent(nextPath)}`);
-
-      if (!ctx.isCurrent()) return;
-
-      showFileEditor(data.path, data.content, data.mime_type);
-    } catch (error) {
-      toast(error.message, "error");
-    }
+    showFileEditor(serverId, nextPath);
   }
 
   async function downloadFile(name) {
@@ -535,18 +532,28 @@ export async function renderFileManager(view, ctx) {
     const files = uploadInput.files;
     if (!files || files.length === 0) return;
 
+    let failures = 0;
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const formData = new FormData();
-      formData.append("file", file);
+      const targetPath = currentPath
+        ? `${currentPath}/${file.name}`
+        : file.name;
+      const params = new URLSearchParams({
+        fp: targetPath,
+        filename: file.name,
+      });
 
       try {
         const response = await fetch(
-          `/api/servers/${serverId}/files/upload?fp=${encodeURIComponent(currentPath)}&filename=${encodeURIComponent(file.name)}`,
+          `/api/servers/${serverId}/files/upload?${params.toString()}`,
           {
             method: "POST",
             credentials: "same-origin",
-            body: formData,
+            headers: {
+              "Content-Type": "application/octet-stream",
+              "X-CSRF-Token": getState().csrfToken || "",
+            },
+            body: file,
           }
         );
 
@@ -555,13 +562,16 @@ export async function renderFileManager(view, ctx) {
           throw new Error(errorData.detail || "Upload failed.");
         }
       } catch (error) {
+        failures += 1;
         toast(`Failed to upload '${file.name}': ${error.message}`, "error");
       }
     }
 
     uploadInput.value = "";
-    toast("Upload complete.");
-    await loadDirectory(currentPath);
+    if (failures === 0) {
+      toast("Upload complete.");
+    }
+    if (ctx.isCurrent()) await loadDirectory(currentPath);
   }
 
   uploadInput.addEventListener("change", uploadFile);
@@ -578,7 +588,7 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
 
-function showFileEditor(path, content, mimeType) {
+function showFileEditor(serverId, path) {
   // Navigate to the file editor view via hash.
   window.location.hash = `#/servers/${serverId}/files/edit?path=${encodeURIComponent(path)}`;
 }

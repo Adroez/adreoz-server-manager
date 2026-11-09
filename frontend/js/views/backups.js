@@ -27,7 +27,7 @@ import {
 
 export async function renderBackups(view, ctx) {
   const parts = window.location.hash.slice(1).split("/");
-  const serverId = Number(parts[1]);
+  const serverId = Number(parts[2]);
 
   if (!Number.isInteger(serverId)) {
     view.replaceChildren(

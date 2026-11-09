@@ -2,10 +2,64 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.models.server import Server
 from tests.conftest import ADMIN_LOGIN, PLAYER_PASSWORD, csrf_headers
+
+
+class _FakeStream:
+    """Empty async stream used by the fake subprocess."""
+
+    async def readline(self) -> bytes:
+        return b""
+
+
+class _FakeProcess:
+    """Minimal asyncio subprocess stand-in for lifecycle tests."""
+
+    def __init__(self, exit_code: int = 0) -> None:
+        self.pid = 4242
+        self.returncode: int | None = None
+        self.stdout = _FakeStream()
+        self.stderr = _FakeStream()
+        self._exit_code = exit_code
+        self._exited = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self._exited.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def _finish(self, code: int) -> None:
+        if self.returncode is None:
+            self.returncode = code
+            self._exited.set()
+
+    def terminate(self) -> None:
+        self._finish(self._exit_code)
+
+    def kill(self) -> None:
+        self._finish(-9)
+
+
+def _wait_for_status(app, server_id: int, expected: str, timeout: float = 10.0) -> str:
+    """Poll the database until the server reaches ``expected`` or time runs out."""
+
+    deadline = time.monotonic() + timeout
+    status = ""
+    while time.monotonic() < deadline:
+        with app.state.session_factory() as db:
+            server = db.get(Server, server_id)
+            status = server.status if server is not None else ""
+        if status == expected:
+            return status
+        time.sleep(0.05)
+    return status
 
 
 def _login_as(client: TestClient, username: str, password: str = PLAYER_PASSWORD) -> None:
@@ -399,3 +453,105 @@ def test_server_software_types_supported(client: TestClient, admin_ready: dict) 
     payload = response.json()
     types = {item["software_type"] for item in payload["items"]}
     assert types == {"vanilla", "paper", "fabric", "forge"}
+
+
+def test_server_start_requires_installed_jar(
+    client: TestClient, admin_ready: dict
+) -> None:
+    server = _setup_player_and_server(
+        client, player_username="serverowner", server_name="no-jar", server_port=25590
+    )
+
+    response = client.post(
+        f"/api/servers/{server['id']}/start", headers=csrf_headers(client)
+    )
+    assert response.status_code == 400
+    assert "server.jar" in response.json()["detail"]
+
+    detail = client.get(f"/api/servers/{server['id']}", headers=csrf_headers(client))
+    assert detail.json()["status"] == "stopped"
+
+
+def test_server_start_stop_launches_and_monitors_process(
+    client: TestClient, admin_ready: dict, app, monkeypatch
+) -> None:
+    server = _setup_player_and_server(
+        client, player_username="serverowner", server_name="lifecycle", server_port=25591
+    )
+    with app.state.session_factory() as db:
+        detail = db.get(Server, server["id"])
+        assert detail is not None
+        Path(detail.directory, "server.jar").write_bytes(b"")
+
+    fake = _FakeProcess(exit_code=0)
+
+    async def fake_exec(*args, **kwargs):
+        return fake
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    start = client.post(
+        f"/api/servers/{server['id']}/start", headers=csrf_headers(client)
+    )
+    assert start.status_code == 200, start.text
+    assert start.json()["status"] == "running"
+
+    process_manager = app.state.settings._process_manager
+    handle = process_manager.get(server["id"])
+    assert handle is not None
+    assert handle.process is fake
+
+    stop = client.post(
+        f"/api/servers/{server['id']}/stop", headers=csrf_headers(client)
+    )
+    assert stop.status_code == 200, stop.text
+    assert stop.json()["status"] in ("stopping", "stopped")
+    assert _wait_for_status(app, server["id"], "stopped") == "stopped"
+
+    detail = client.get(f"/api/servers/{server['id']}", headers=csrf_headers(client))
+    assert detail.json()["status"] == "stopped"
+    assert detail.json()["process_id"] is None
+
+
+def test_server_restart_replaces_running_process(
+    client: TestClient, admin_ready: dict, app, monkeypatch
+) -> None:
+    server = _setup_player_and_server(
+        client, player_username="serverowner", server_name="restartable", server_port=25592
+    )
+    with app.state.session_factory() as db:
+        detail = db.get(Server, server["id"])
+        assert detail is not None
+        Path(detail.directory, "server.jar").write_bytes(b"")
+
+    launched: list[_FakeProcess] = []
+
+    async def fake_exec(*args, **kwargs):
+        fake = _FakeProcess(exit_code=0)
+        launched.append(fake)
+        return fake
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    start = client.post(
+        f"/api/servers/{server['id']}/start", headers=csrf_headers(client)
+    )
+    assert start.status_code == 200, start.text
+
+    restart = client.post(
+        f"/api/servers/{server['id']}/restart", headers=csrf_headers(client)
+    )
+    assert restart.status_code == 200, restart.text
+    assert restart.json()["status"] == "running"
+    assert len(launched) == 2
+
+    process_manager = app.state.settings._process_manager
+    handle = process_manager.get(server["id"])
+    assert handle is not None
+    assert handle.process is launched[1]
+
+    stop = client.post(
+        f"/api/servers/{server['id']}/stop", headers=csrf_headers(client)
+    )
+    assert stop.status_code == 200, stop.text
+    assert _wait_for_status(app, server["id"], "stopped") == "stopped"

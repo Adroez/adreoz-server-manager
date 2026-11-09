@@ -1,12 +1,11 @@
 /* File editor view — view and edit text files. */
 
 import { api } from "../core/api.js";
-import { el, setBusy } from "../core/dom.js";
+import { el } from "../core/dom.js";
 import { icon } from "../components/icons.js";
 import { toast } from "../components/toast.js";
 import {
   actionButton,
-  emptyState,
   errorState,
   loadingState,
   pageHeader,
@@ -16,7 +15,7 @@ export async function renderFileEdit(view, ctx) {
   // Extract server ID and path from hash: #/servers/123/files/edit?path=...
   const hash = window.location.hash.slice(1);
   const parts = hash.split("/");
-  const serverId = Number(parts[1]);
+  const serverId = Number(parts[2]);
   const queryStart = hash.indexOf("?");
   const query = queryStart >= 0 ? hash.slice(queryStart + 1) : "";
   const params = new URLSearchParams(query);
@@ -58,7 +57,7 @@ export async function renderFileEdit(view, ctx) {
 
   try {
     const data = await api(
-      `/servers/${serverId}/files/read?path=${encodeURIComponent(filePath)}`
+      `/servers/${serverId}/files/read?fp=${encodeURIComponent(filePath)}`
     );
     fileContent = data.content;
     mimeType = data.mime_type || "text/plain";
@@ -103,7 +102,10 @@ export async function renderFileEdit(view, ctx) {
         label: "Back to files",
         iconName: "folder",
         handler: () => {
-          window.location.hash = `#/servers/${serverId}/files${filePath ? "?path=" + encodeURIComponent(filePath) : ""}`;
+          const parentPath = filePath.split("/").slice(0, -1).join("/");
+          window.location.hash = parentPath
+            ? `#/servers/${serverId}/files?path=${encodeURIComponent(parentPath)}`
+            : `#/servers/${serverId}/files`;
         },
       })
     );
@@ -174,7 +176,7 @@ export async function renderFileEdit(view, ctx) {
     const newContent = editor.value;
 
     try {
-      const result = await api(`/servers/${serverId}/files/write`, {
+      await api(`/servers/${serverId}/files/write`, {
         method: "POST",
         body: { path: filePath, content: newContent },
       });
@@ -207,13 +209,7 @@ export async function renderFileEdit(view, ctx) {
     }
   };
   window.addEventListener("beforeunload", beforeUnloadHandler);
-
-  const originalIsCurrent = ctx.isCurrent;
-  ctx.isCurrent = () => {
-    if (!originalIsCurrent()) {
-      window.removeEventListener("beforeunload", beforeUnloadHandler);
-      return false;
-    }
-    return true;
-  };
+  ctx.onCleanup(() => {
+    window.removeEventListener("beforeunload", beforeUnloadHandler);
+  });
 }
