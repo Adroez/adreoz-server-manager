@@ -19,6 +19,7 @@ from app.api.deps import (
     require_csrf,
 )
 from app.core.config import Settings
+from app.core.minecraft_software import SoftwareDownloadError
 from app.models.server import Server
 from app.schemas.software import (
     SoftwareInstallRequest,
@@ -28,7 +29,13 @@ from app.schemas.software import (
     SoftwareBuildListResponse,
 )
 from app.services.audit import request_meta
-from app.services.errors import ConflictError, DomainError, NotFoundError
+from app.services.errors import (
+    ConflictError,
+    DomainError,
+    ForbiddenError,
+    NotFoundError,
+    UpstreamError,
+)
 from app.services.software_install import SoftwareInstallService
 
 router = APIRouter(prefix="/servers", tags=["software-install"])
@@ -145,16 +152,19 @@ def list_software_versions(
     """List available Minecraft versions for a software type."""
     service = _software_service(db, settings)
 
-    if software_type == "vanilla":
-        versions = service.installer.get_vanilla_versions()
-    elif software_type == "paper":
-        versions = service.installer.get_paper_versions()
-    elif software_type == "fabric":
-        versions = service.installer.get_fabric_versions()
-    elif software_type == "forge":
-        versions = service.installer.get_forge_versions()
-    else:
-        raise DomainError(f"Unsupported software type: {software_type}.")
+    try:
+        if software_type == "vanilla":
+            versions = service.installer.get_vanilla_versions()
+        elif software_type == "paper":
+            versions = service.installer.get_paper_versions()
+        elif software_type == "fabric":
+            versions = service.installer.get_fabric_versions()
+        elif software_type == "forge":
+            versions = service.installer.get_forge_versions()
+        else:
+            raise DomainError(f"Unsupported software type: {software_type}.")
+    except SoftwareDownloadError as exc:
+        raise UpstreamError(str(exc)) from exc
 
     return SoftwareVersionListResponse(
         software_type=software_type,
@@ -176,16 +186,19 @@ def list_software_builds(
     """List available builds for a software type and version."""
     service = _software_service(db, settings)
 
-    if software_type == "paper":
-        builds = service.installer.get_paper_builds(version)
-    elif software_type == "fabric":
-        builds = service.installer.get_fabric_loader_versions(version)
-    elif software_type == "forge":
-        builds = service.installer.get_forge_versions(version)
-    else:
-        raise DomainError(
-            f"Build listing is not supported for software type: {software_type}."
-        )
+    try:
+        if software_type == "paper":
+            builds = service.installer.get_paper_builds(version)
+        elif software_type == "fabric":
+            builds = service.installer.get_fabric_loader_versions(version)
+        elif software_type == "forge":
+            builds = service.installer.get_forge_builds(version)
+        else:
+            raise DomainError(
+                f"Build listing is not supported for software type: {software_type}."
+            )
+    except SoftwareDownloadError as exc:
+        raise UpstreamError(str(exc)) from exc
 
     return SoftwareBuildListResponse(
         software_type=software_type,

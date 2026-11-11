@@ -69,13 +69,17 @@ export async function renderServerDetail(view, ctx) {
   render(server, runtimes);
 
   function render(data, availableRuntimes) {
-    const canManage = true; // Ownership checked by backend; UI shows all controls
-
     const headerActions = [];
     const installComplete =
       data.install_status === "completed" || data.install_status === "none";
     const canStart =
       data.status === "stopped" || data.status === "error";
+    // Derived once in render scope: used by both the header Start action and
+    // the Controls card. The Start action requires a stopped/error server
+    // whose software installation is complete.
+    const startDisabled = !canStart || !installComplete;
+    const operationsBusy =
+      data.status === "starting" || data.status === "stopping";
 
     if (data.status === "running") {
       headerActions.push(
@@ -96,20 +100,15 @@ export async function renderServerDetail(view, ctx) {
         })
       );
     } else {
-      const startDisabled =
-        !canStart ||
-        (data.install_status !== "completed" &&
-          data.install_status !== "none");
       headerActions.push(
         actionButton({
           label: data.status === "error" ? "Retry" : "Start",
           iconName: "power",
           disabled: startDisabled,
           handler: () => changeStatus("start"),
-          title:
-            startDisabled || data.install_status === "completed" || data.install_status === "none"
-              ? undefined
-              : "Server software is not installed. Install software before starting.",
+          title: !installComplete
+            ? "Server software is not installed. Install software before starting."
+            : undefined,
         })
       );
     }
@@ -330,9 +329,8 @@ export async function renderServerDetail(view, ctx) {
                 class: `btn btn-${data.status === "running" ? "danger" : "primary"}`,
                 type: "button",
                 disabled:
-                  data.status === "starting" ||
-                  data.status === "stopping" ||
-                  startDisabled,
+                  operationsBusy ||
+                  (data.status !== "running" && startDisabled),
                 on: { click: () => changeStatus(data.status === "running" ? "stop" : "start") },
               },
               icon(data.status === "running" ? "power" : "power", 15),
@@ -350,9 +348,8 @@ export async function renderServerDetail(view, ctx) {
                 class: "btn btn-secondary",
                 type: "button",
                 disabled:
-                  data.status !== "running" &&
-                  data.status !== "stopped" &&
-                  data.status !== "error",
+                  operationsBusy ||
+                  (!installComplete && data.status !== "running"),
                 on: { click: () => changeStatus("restart") },
               },
               icon("refresh", 15),

@@ -14,7 +14,13 @@ import asyncio
 import pytest
 
 from app.core.java import JavaRuntime
-from app.core.minecraft_software import SoftwareDownloadInfo, SoftwareInstaller
+from app.core.minecraft_software import (
+    SoftwareBuildInfo,
+    SoftwareDownloadError,
+    SoftwareDownloadInfo,
+    SoftwareInstaller,
+    SoftwareVersionInfo,
+)
 from app.core.version_manifest import (
     MojangManifestClient,
     MojangManifestError,
@@ -22,6 +28,7 @@ from app.core.version_manifest import (
     MinecraftVersionInfo,
 )
 from app.models.java_runtime import JavaRuntime as JavaRuntimeModel
+from app.schemas.software import SoftwareBuildListResponse, SoftwareVersionListResponse
 from app.services.compat import check_compatibility, required_java_major
 from app.services.errors import ConflictError, DomainError, NotFoundError
 from app.services.minecraft_version import MinecraftVersionService
@@ -328,6 +335,125 @@ def test_minecraft_version_service_get_metadata(tmp_path):
         metadata = service.get_version_metadata("1.20.1")
         assert metadata["id"] == "1.20.1"
         assert metadata["java_version_major"] == 17
+
+
+# ----------------------------------------------------------------------
+# Version/build response serialization and provider failures
+# ------------------------------------------------------------------
+
+
+def test_version_list_response_accepts_installer_dataclasses():
+    """Installer dataclasses validate against the API response schema.
+
+    Regression: Pydantic rejected ``SoftwareVersionInfo`` instances because
+    the response models were not configured to read attributes, which turned
+    every versions request into an HTTP 500.
+    """
+
+    response = SoftwareVersionListResponse(
+        software_type="vanilla",
+        versions=[
+            SoftwareVersionInfo(
+                id="1.20.1",
+                type="release",
+                release_time="2023-06-07T13:25:51+00:00",
+            )
+        ],
+    )
+
+    assert response.versions[0].id == "1.20.1"
+    assert response.versions[0].type == "release"
+
+
+def test_build_list_response_accepts_installer_dataclasses():
+    """Installer build dataclasses validate against the API response schema."""
+
+    response = SoftwareBuildListResponse(
+        software_type="paper",
+        version="1.20.1",
+        builds=[SoftwareBuildInfo(id="196", time="2023-09-21T16:59:41.322Z")],
+    )
+
+    assert response.builds[0].id == "196"
+
+
+def test_fabric_versions_use_game_endpoint():
+    """Fabric version listing returns Minecraft game versions, not loaders."""
+
+    installer = SoftwareInstaller()
+    payload = [
+        {"version": "1.20.1", "stable": True},
+        {"version": "26.4-snapshot-8", "stable": False},
+    ]
+
+    with patch.object(installer, "_fetch_json", return_value=payload):
+        versions = installer.get_fabric_versions()
+
+    assert [v.id for v in versions] == ["1.20.1", "26.4-snapshot-8"]
+    assert versions[0].type == "release"
+    assert versions[1].type == "snapshot"
+
+
+def test_forge_versions_parse_maven_metadata():
+    """Forge versions are derived from Maven metadata, newest first."""
+
+    installer = SoftwareInstaller()
+    coordinates = [
+        "1.20.1-47.4.29",
+        "1.20.1-47.4.5",
+        "1.21-51.0.33",
+        "1.21-51.0.32",
+        "1.16.5-36.2.39",
+    ]
+
+    with patch.object(
+        installer, "_get_forge_maven_versions", return_value=coordinates
+    ):
+        versions = installer.get_forge_versions()
+
+    assert [v.id for v in versions] == ["1.21", "1.20.1", "1.16.5"]
+
+
+def test_forge_builds_filter_by_minecraft_version():
+    """Forge builds only include releases for the requested version."""
+
+    installer = SoftwareInstaller()
+    coordinates = [
+        "1.20.1-47.4.29",
+        "1.20.1-47.4.5",
+        "1.20.1-47.4.28",
+        "1.21-51.0.33",
+    ]
+
+    with patch.object(
+        installer, "_get_forge_maven_versions", return_value=coordinates
+    ):
+        builds = installer.get_forge_builds("1.20.1")
+
+    assert [b.id for b in builds] == ["47.4.29", "47.4.28", "47.4.5"]
+
+
+def test_version_endpoint_returns_502_on_provider_failure(client, admin_ready, monkeypatch):
+    """Provider errors surface as HTTP 502 instead of an unexpected 500."""
+
+    def boom(self):
+        raise SoftwareDownloadError("provider is unavailable")
+
+    monkeypatch.setattr(SoftwareInstaller, "get_paper_versions", boom)
+
+    response = client.get("/api/servers/software/versions/paper")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "provider is unavailable"
+
+
+def test_version_endpoint_rejects_unknown_software_type(client, admin_ready):
+    """Unknown software types return HTTP 400, not 500."""
+
+    response = client.get("/api/servers/software/versions/unknown")
+
+    assert response.status_code == 400
+    assert "Unsupported software type" in response.json()["detail"]
 
 
 # ----------------------------------------------------------------------

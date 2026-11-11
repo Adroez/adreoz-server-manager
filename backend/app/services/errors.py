@@ -21,3 +21,9 @@ class ConflictError(DomainError):
 
 class ForbiddenError(DomainError):
     status_code = 403
+
+
+class UpstreamError(DomainError):
+    """An upstream provider failed to answer a metadata or download request."""
+
+    status_code = 502

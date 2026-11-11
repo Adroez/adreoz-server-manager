@@ -30,6 +30,18 @@ MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 120
 
 
+def _version_sort_key(value: str) -> tuple[int, ...]:
+    """Return a numeric sort key for dotted Minecraft/Forge version strings."""
+
+    parts: list[int] = []
+    for piece in value.replace("-", ".").replace("_", ".").split("."):
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
 @dataclass
 class SoftwareDownloadInfo:
     """Metadata for a downloadable server software artifact."""
@@ -522,86 +534,104 @@ class SoftwareInstaller:
         ]
 
     def get_fabric_versions(self) -> list[SoftwareVersionInfo]:
-        """Return available Fabric versions from the Fabric Meta API."""
-        import json
-        import urllib.request
-        from urllib.error import HTTPError, URLError
+        """Return supported Minecraft game versions from the Fabric Meta API.
 
-        url = "https://meta.fabricmc.net/v2/versions/loader"
+        Fabric's loader endpoint lists loader releases, not game versions.
+        The game endpoint is the correct source for the Minecraft version
+        dropdown; loader releases are listed separately per game version.
+        """
+        url = "https://meta.fabricmc.net/v2/versions/game"
+        data = self._fetch_json(url)
 
-        try:
-            request = Request(
-                url,
-                headers={
-                    "User-Agent": "Adreoz-Server-Manager/0.1.0",
-                    "Accept": "application/json",
-                },
-            )
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            raise SoftwareDownloadError(
-                f"Fabric API error: HTTP {exc.code}"
-            ) from exc
-        except URLError as exc:
-            raise SoftwareDownloadError(
-                "Unable to reach Fabric API."
-            ) from exc
-        except Exception as exc:
-            logger.exception("Unexpected error fetching Fabric versions")
-            raise SoftwareDownloadError(
-                "Failed to fetch Fabric versions."
-            ) from exc
-
+        entries = data if isinstance(data, list) else []
         return [
             SoftwareVersionInfo(
                 id=v.get("version", ""),
-                type="release",
+                type="release" if v.get("stable") else "snapshot",
                 release_time=None,
             )
-            for v in data
+            for v in entries
+            if isinstance(v, dict) and v.get("version")
         ]
 
-    def get_forge_versions(self) -> list[SoftwareVersionInfo]:
-        """Return available Forge versions from Forge metadata."""
-        import json
-        import urllib.request
-        from urllib.error import HTTPError, URLError
+    def _get_forge_maven_versions(self) -> list[str]:
+        """Return every published Forge coordinate from Forge's Maven metadata.
 
-        url = "https://maven.minecraftforge.net/net/minecraftforge/forge/_metadata/versions.json"
+        Entries look like ``1.20.1-47.4.29`` (Minecraft version - Forge
+        version). Forge publishes no JSON versions API, but its Maven
+        repository exposes a standard ``maven-metadata.xml`` listing.
+        """
+
+        import xml.etree.ElementTree as ET
+
+        url = (
+            "https://maven.minecraftforge.net/net/minecraftforge/forge/"
+            "maven-metadata.xml"
+        )
 
         try:
             request = Request(
                 url,
                 headers={
                     "User-Agent": "Adreoz-Server-Manager/0.1.0",
-                    "Accept": "application/json",
+                    "Accept": "application/xml",
                 },
             )
             with urlopen(request, timeout=self.timeout_seconds) as response:
-                data = json.loads(response.read().decode("utf-8"))
+                payload = response.read()
         except HTTPError as exc:
             raise SoftwareDownloadError(
-                f"Forge API error: HTTP {exc.code}"
+                f"Forge metadata error: HTTP {exc.code}."
             ) from exc
         except URLError as exc:
             raise SoftwareDownloadError(
                 "Unable to reach Forge metadata."
             ) from exc
-        except Exception as exc:
-            logger.exception("Unexpected error fetching Forge versions")
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Unexpected error fetching Forge metadata")
             raise SoftwareDownloadError(
-                "Failed to fetch Forge versions."
+                "Failed to fetch Forge metadata."
             ) from exc
 
-        versions = data.get("versions", [])
+        try:
+            root = ET.fromstring(payload)
+        except ET.ParseError as exc:
+            raise SoftwareDownloadError(
+                "Forge metadata response was not valid XML."
+            ) from exc
+
+        versions = [
+            (element.text or "").strip()
+            for element in root.findall("./versioning/versions/version")
+        ]
+        versions = [version for version in versions if version]
+        if not versions:
+            raise SoftwareDownloadError(
+                "Forge metadata did not contain any published versions."
+            )
+        return versions
+
+    def get_forge_versions(self) -> list[SoftwareVersionInfo]:
+        """Return Minecraft versions that have at least one Forge release."""
+
+        all_versions = self._get_forge_maven_versions()
+
+        seen: set[str] = set()
+        minecraft_versions: list[str] = []
+        for coordinate in all_versions:
+            minecraft_version = coordinate.split("-", 1)[0]
+            if minecraft_version and minecraft_version not in seen:
+                seen.add(minecraft_version)
+                minecraft_versions.append(minecraft_version)
+
+        minecraft_versions.sort(key=_version_sort_key, reverse=True)
         return [
             SoftwareVersionInfo(
-                id=v.get("version", ""),
+                id=version,
                 type="release",
                 release_time=None,
             )
-            for v in versions
+            for version in minecraft_versions
         ]
 
     # ------------------------------------------------------------------
@@ -674,14 +704,26 @@ class SoftwareInstaller:
         ]
 
     def get_forge_builds(self, version: str) -> list[SoftwareBuildInfo]:
-        """Return available Forge versions for a Minecraft version.
+        """Return Forge releases for a Minecraft version.
 
-        Forge does not publish a public API for listing all Forge versions.
-        Returns an empty list so callers can degrade gracefully. Users must
-        specify the Forge version manually.
+        Filters Forge's Maven metadata coordinates (``{version}-{forge}``)
+        and returns the Forge portion. Newest releases come first.
         """
-        logger.warning(
-            "Forge versions API is unavailable; no Forge builds listed for %s.",
-            version,
-        )
-        return []
+
+        all_versions = self._get_forge_maven_versions()
+        prefix = f"{version}-"
+
+        forge_versions = {
+            coordinate[len(prefix):]
+            for coordinate in all_versions
+            if coordinate.startswith(prefix) and len(coordinate) > len(prefix)
+        }
+
+        ordered = sorted(forge_versions, key=_version_sort_key, reverse=True)
+        return [
+            SoftwareBuildInfo(
+                id=forge_version,
+                time=None,
+            )
+            for forge_version in ordered
+        ]

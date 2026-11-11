@@ -27,6 +27,7 @@ def upgrade() -> None:
         sa.Column('name', sa.String(length=128), nullable=False),
         sa.Column('vendor', sa.String(length=64), nullable=False),
         sa.Column('version', sa.String(length=32), nullable=False),
+        sa.Column('major_version', sa.Integer(), nullable=False),
         sa.Column('executable_path', sa.String(length=512), nullable=False),
         sa.Column('source_url', sa.String(length=512), nullable=True),
         sa.Column('checksum', sa.String(length=128), nullable=True),

@@ -185,12 +185,13 @@ export function errorState(message, onRetry = null) {
   );
 }
 
-export function actionButton({ label, iconName, handler, variant = "ghost", size = "xs", title }) {
+export function actionButton({ label, iconName, handler, variant = "ghost", size = "xs", title, disabled = false }) {
   return el(
     "button",
     {
       class: `btn btn-${variant} btn-${size}`,
       type: "button",
+      disabled,
       attrs: { title: title || label },
       on: { click: handler },
     },

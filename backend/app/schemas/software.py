@@ -49,6 +49,8 @@ class SoftwareInstallStatus(BaseModel):
 class SoftwareVersionOut(BaseModel):
     """A single Minecraft version entry."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     type: str
     release_time: Optional[str] = None
@@ -63,6 +65,8 @@ class SoftwareVersionListResponse(BaseModel):
 
 class SoftwareBuildOut(BaseModel):
     """A single build/loader version entry."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: str
     time: Optional[str] = None
