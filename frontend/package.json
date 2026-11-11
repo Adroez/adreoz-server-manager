@@ -1,0 +1,13 @@
+{
+  "name": "adreoz-server-manager-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser assets and Node-based DOM tests for Adreoz Server Manager.",
+  "scripts": {
+    "test": "node --test js/tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^31.0.0"
+  }
+}
