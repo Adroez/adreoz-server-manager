@@ -391,6 +391,18 @@ button {
   line-height: 1.45;
 }
 
+/* Label/input pair with an inline action button (e.g. JVM arguments). */
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-row > .config-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .field-error {
   color: var(--red-soft);
   font-size: 0.76rem;

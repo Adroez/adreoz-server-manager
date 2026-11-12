@@ -312,11 +312,17 @@ def download_file_endpoint(
             while chunk := f.read(64 * 1024):
                 yield chunk
 
+    # Sanitize filename for Content-Disposition header to prevent header injection.
+    safe_filename = target.name.replace("\n", "").replace("\r", "").replace('"', "'")
+    # RFC 5987 encoding for non-ASCII; here we just use a safe fallback.
+    if not safe_filename:
+        safe_filename = "download"
+
     return StreamingResponse(
         iter_file(),
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{target.name}"',
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
             "Content-Length": str(file_size),
         },
     )

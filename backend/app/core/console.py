@@ -19,6 +19,16 @@ logger = logging.getLogger("asm.console")
 # Maximum number of recent log lines retained per server for new clients.
 MAX_LOG_BUFFER = 500
 
+# Maximum concurrent console clients per server. Each client holds an open
+# WebSocket plus a copy of the history during replay, so this is bounded.
+MAX_CLIENTS_PER_SERVER = 5
+
+# Maximum number of buffered lines replayed to a newly connected client.
+MAX_HISTORY_REPLAY = 200
+
+# Seconds to wait for a single client to accept one console message.
+MAX_SEND_SECONDS = 5.0
+
 
 class ConsoleManager:
     """Manages WebSocket console connections and log buffering per server."""
@@ -35,19 +45,28 @@ class ConsoleManager:
 
     async def connect(
         self, server_id: int, websocket: WebSocket
-    ) -> list[tuple[str, str]]:
+    ) -> Optional[list[tuple[str, str]]]:
         """Register a WebSocket client and return recent log history.
 
-        Returns a list of ``(stream, line)`` tuples to replay to the client.
+        Returns a list of ``(stream, line)`` tuples to replay to the client,
+        or ``None`` when the per-server connection limit is reached.
         """
 
         async with self._lock_for(server_id):
-            if server_id not in self._clients:
-                self._clients[server_id] = set()
-            self._clients[server_id].add(websocket)
-            if server_id not in self._log_buffers:
-                self._log_buffers[server_id] = deque(maxlen=MAX_LOG_BUFFER)
-            history = list(self._log_buffers[server_id])
+            clients = self._clients.setdefault(server_id, set())
+            if len(clients) >= MAX_CLIENTS_PER_SERVER:
+                logger.warning(
+                    "Rejecting console connection for server %s: limit of %s "
+                    "clients reached.",
+                    server_id,
+                    MAX_CLIENTS_PER_SERVER,
+                )
+                return None
+            clients.add(websocket)
+            buffer = self._log_buffers.setdefault(
+                server_id, deque(maxlen=MAX_LOG_BUFFER)
+            )
+            history = list(buffer)[-MAX_HISTORY_REPLAY:]
         return history
 
     async def disconnect(self, server_id: int, websocket: WebSocket) -> None:
@@ -83,11 +102,18 @@ class ConsoleManager:
             for ws in clients:
                 try:
                     if ws.client_state == WebSocketState.CONNECTED:
-                        await ws.send_json(message)
+                        # A stalled client must not block the producer forever.
+                        await asyncio.wait_for(
+                            ws.send_json(message),
+                            timeout=MAX_SEND_SECONDS,
+                        )
                     else:
                         disconnected.append(ws)
                 except Exception:  # pragma: no cover - send resilience
-                    logger.exception("Failed to send console message to client")
+                    logger.warning(
+                        "Dropping unresponsive console client for server %s",
+                        server_id,
+                    )
                     disconnected.append(ws)
             for ws in disconnected:
                 await self.disconnect(server_id, ws)

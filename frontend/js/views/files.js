@@ -156,7 +156,7 @@ export async function renderFileManager(view, ctx) {
       pageHeader({
         eyebrow: "File manager · " + data.name,
         title: data.name,
-        description: `Browse and edit files in ${data.directory}.`,
+        description: `Browse and edit files in ${data.relative_directory || data.directory}.`,
         actions: [
           el(
             "div",

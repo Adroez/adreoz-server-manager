@@ -31,22 +31,21 @@ from app.services.minecraft_version import MinecraftVersionService
 router = APIRouter(prefix="/minecraft/versions", tags=["minecraft-versions"])
 
 
-def _version_service(db: Session, settings: Settings) -> MinecraftVersionService:
-    import sqlalchemy.orm as orm
+def _version_service(request: Request, settings: Settings) -> MinecraftVersionService:
+    """Build a MinecraftVersionService bound to the app session factory."""
 
-    engine = db.bind
-    factory = orm.sessionmaker(bind=engine, expire_on_commit=False)
-    return MinecraftVersionService(settings, factory)
+    return MinecraftVersionService(settings, request.app.state.session_factory)
 
 
 @router.get("", response_model=MinecraftVersionListResponse)
 def list_versions(
+    request: Request,
     auth: Annotated[AuthContext, Depends(get_current_auth)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
     releases_only: bool = Query(default=False),
 ) -> MinecraftVersionListResponse:
-    service = _version_service(db, settings)
+    service = _version_service(request, settings)
     if releases_only:
         items = service.list_releases()
     else:
@@ -60,11 +59,12 @@ def list_versions(
 @router.get("/{version_id}", response_model=MinecraftVersionMetadataOut)
 def get_version(
     version_id: str,
+    request: Request,
     auth: Annotated[AuthContext, Depends(get_current_auth)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> MinecraftVersionMetadataOut:
-    service = _version_service(db, settings)
+    service = _version_service(request, settings)
     metadata = service.get_version_metadata(version_id)
     return MinecraftVersionMetadataOut.model_validate(metadata)
 
@@ -92,7 +92,7 @@ def download_server_jar(
     if not is_owner and not is_admin:
         raise DomainError("You do not have access to this server.")
 
-    service = _version_service(db, settings)
+    service = _version_service(request, settings)
     meta = request_meta(request)
 
     result = service.download_server_jar(

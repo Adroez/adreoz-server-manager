@@ -79,6 +79,16 @@ class SoftwareDownloadError(RuntimeError):
     """Raised when a software download or verification fails."""
 
 
+def _remove_partial(path: Path) -> None:
+    """Best-effort removal of a partially written download."""
+
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:  # pragma: no cover - best effort
+        logger.exception("Failed to remove partial download %s", path)
+
+
 class SoftwareInstaller:
     """Downloads and verifies Minecraft server software from trusted sources."""
 
@@ -400,27 +410,41 @@ class SoftwareInstaller:
                         chunk = response.read(1024 * 1024)
                         if not chunk:
                             break
-                        out_file.write(chunk)
                         downloaded += len(chunk)
-                        if total_size is not None and downloaded > MAX_DOWNLOAD_BYTES:
+                        # Enforce the cap for chunked responses too: a missing
+                        # or lying Content-Length must not bypass the limit.
+                        if downloaded > MAX_DOWNLOAD_BYTES:
                             raise SoftwareDownloadError(
-                                f"Download exceeded maximum size ({MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB)."
+                                "Download exceeded maximum size "
+                                f"({MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB)."
                             )
+                        out_file.write(chunk)
+        except SoftwareDownloadError:
+            # Size cap or checksum style failures: never leave a partial file
+            # behind, or an interrupted download looks like an installed JAR.
+            _remove_partial(destination)
+            raise
         except HTTPError as exc:
             logger.error("Download failed: HTTP %s for %s", exc.code, url)
+            _remove_partial(destination)
             raise SoftwareDownloadError(
                 f"Failed to download software (HTTP {exc.code})."
             ) from exc
         except URLError as exc:
             logger.error("Download network error: %s", exc)
+            _remove_partial(destination)
             raise SoftwareDownloadError(
                 "Unable to reach the download server."
             ) from exc
+        except OSError:
+            _remove_partial(destination)
+            raise
 
         # Verify SHA-256 if provided.
         if expected_sha256:
             actual = self._sha256(destination)
             if actual.lower() != expected_sha256.lower():
+                _remove_partial(destination)
                 raise SoftwareDownloadError(
                     "Download checksum verification failed. Download may be corrupted or tampered."
                 )
@@ -435,7 +459,12 @@ class SoftwareInstaller:
 
     @staticmethod
     def _safe_extract_archive(archive: Path, dest: Path) -> None:
-        """Safely extract a zip or tar.gz archive, preventing path traversal."""
+        """Safely extract a zip or tar.gz archive, preventing path traversal.
+
+        Validates all members before extraction. Rejects symlinks, hard links,
+        devices, FIFOs, and any entry that would escape the destination directory.
+        Uses tarfile's filter="data" on Python 3.12+ for defense in depth.
+        """
         try:
             if archive.suffix.lower() in (".zip", ".jar"):
                 with zipfile.ZipFile(archive) as zip_file:
@@ -446,6 +475,15 @@ class SoftwareInstaller:
                             raise SoftwareDownloadError(
                                 "Unsafe archive entry detected during extraction."
                             )
+                        # Reject symlinks and other non-regular files.
+                        # ZipInfo doesn't expose type directly; external_attr has Unix mode in high bits.
+                        # Conservative: reject if not a regular file or directory.
+                        # (external_attr >> 16) & 0xF000 gives file type.
+                        attr = member.external_attr >> 16
+                        if attr & 0xF000 not in (0x4000, 0x8000):  # not dir, not regular file
+                            raise SoftwareDownloadError(
+                                "Unsafe archive entry type detected during extraction."
+                            )
                         target = (dest / member_path).resolve()
                         try:
                             target.relative_to(dest.resolve())
@@ -454,9 +492,17 @@ class SoftwareInstaller:
                                 "Unsafe archive entry detected during extraction."
                             )
                     zip_file.extractall(dest)
-            elif archive.suffix.lower() in (".tar.gz", ".tgz"):
+            elif "".join(archive.suffixes).lower() in (".tar.gz", ".tgz"):
                 with tarfile.open(archive, "r:gz") as tar:
-                    for member in tar.getmembers():
+                    members = tar.getmembers()
+                    for member in members:
+                        # Reject unsafe member types: symlinks, hard links, devices, FIFOs.
+                        if member.isdir() or member.isfile():
+                            pass
+                        else:
+                            raise SoftwareDownloadError(
+                                "Unsafe archive entry type detected during extraction."
+                            )
                         member_path = Path(member.name)
                         if member_path.is_absolute() or ".." in member_path.parts:
                             raise SoftwareDownloadError(
@@ -469,7 +515,14 @@ class SoftwareInstaller:
                             raise SoftwareDownloadError(
                                 "Unsafe archive entry detected during extraction."
                             )
-                    tar.extractall(dest)
+                    # Use filter="data" on Python 3.12+ for defense in depth.
+                    extract_kwargs = {"path": dest, "members": members}
+                    try:
+                        # filter="data" is available on Python 3.12+
+                        extract_kwargs["filter"] = "data"
+                    except TypeError:
+                        pass  # Older Python: filter not supported.
+                    tar.extractall(**extract_kwargs)
             else:
                 raise SoftwareDownloadError(
                     f"Unsupported archive format: {archive.suffix}"

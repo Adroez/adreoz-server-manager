@@ -94,6 +94,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             finally:
                 db.close()
 
+        # Reconcile server process state at startup.
+        from app.services.operations import configure_lock_directory
+
+        try:
+            configure_lock_directory(settings.data_dir / ".locks")
+        except OSError:  # pragma: no cover - startup resilience
+            logger.exception(
+                "Could not create the operation lock directory; "
+                "cross-process locking is disabled."
+            )
+            configure_lock_directory(None)
+
+        db = session_factory()
+        try:
+            from app.services.servers import reconcile_processes
+            changed = reconcile_processes(db, app.state.process_manager)
+            if changed:
+                logger.info("Reconciled %s server(s) at startup: %s", len(changed), changed)
+        except Exception:  # pragma: no cover - startup resilience
+            logger.exception("Failed to reconcile processes at startup.")
+        finally:
+            db.close()
+
+        # Remove leftovers from interrupted Java runtime installs.
+        try:
+            from app.services.java_runtime import JavaRuntimeService
+
+            JavaRuntimeService(settings, session_factory).cleanup_orphan_artifacts()
+        except Exception:  # pragma: no cover - startup resilience
+            logger.exception("Failed to clean up orphan Java runtime artifacts.")
+
         # In-process automatic backup scheduler. Tests disable it so runs are
         # deterministic; the scheduler pass itself is exercised directly.
         scheduler_task: asyncio.Task | None = None

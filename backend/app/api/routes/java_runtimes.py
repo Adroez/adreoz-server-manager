@@ -31,14 +31,10 @@ from app.services.java_runtime import JavaRuntimeService
 router = APIRouter(prefix="/java/runtimes", tags=["java-runtimes"])
 
 
-def _java_service(db: Session, settings: Settings) -> JavaRuntimeService:
-    """Build a JavaRuntimeService bound to the current request's session factory."""
+def _java_service(request: Request, settings: Settings) -> JavaRuntimeService:
+    """Build a JavaRuntimeService bound to the application's session factory."""
 
-    import sqlalchemy.orm as orm
-
-    engine = db.bind
-    factory = orm.sessionmaker(bind=engine, expire_on_commit=False)
-    return JavaRuntimeService(settings, factory)
+    return JavaRuntimeService(settings, request.app.state.session_factory)
 
 
 @router.get("", response_model=JavaRuntimeListResponse)
@@ -48,7 +44,7 @@ def list_runtimes(
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> JavaRuntimeListResponse:
-    service = _java_service(db, settings)
+    service = _java_service(request, settings)
     runtimes = service.list_runtimes(db)
     return JavaRuntimeListResponse(
         items=[JavaRuntimeOut.model_validate(r) for r in runtimes],
@@ -64,7 +60,7 @@ def install_managed_java_17(
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> JavaRuntimeInstallResponse:
-    service = _java_service(db, settings)
+    service = _java_service(request, settings)
     meta = request_meta(request)
 
     installed = service.install_managed_java_17(db, actor=auth.user, meta=meta)
@@ -82,7 +78,7 @@ def delete_managed_runtime(
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict:
-    service = _java_service(db, settings)
+    service = _java_service(request, settings)
     meta = request_meta(request)
 
     service.delete_managed_runtime(db, runtime_id, actor=auth.user, meta=meta)

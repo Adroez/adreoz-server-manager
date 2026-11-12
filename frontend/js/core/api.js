@@ -11,12 +11,15 @@ export class ApiError extends Error {
   }
 }
 
-function extractMessage(data, status) {
+export function extractMessage(data, status) {
   if (data && typeof data.detail === "string") {
     return data.detail;
   }
   if (data && Array.isArray(data.detail) && data.detail.length > 0) {
-    return data.detail.map((item) => item.msg || "Invalid value").join(" ");
+    return data.detail
+      // Pydantic prefixes custom validator messages with "Value error, ".
+      .map((item) => (item.msg || "Invalid value").replace(/^Value error,\s*/, ""))
+      .join(" ");
   }
   if (status === 401) return "Authentication required.";
   if (status === 403) return "You do not have permission to do that.";

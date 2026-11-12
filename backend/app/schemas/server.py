@@ -7,6 +7,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.clock import UtcDateTime
+from app.core.jvm_args import validate_jvm_args
 from app.core.validation import validate_server_name
 from app.schemas.common import StrictRequest
 
@@ -83,6 +84,12 @@ class ServerCreateRequest(ServerBase):
     directory: str | None = Field(default=None, max_length=512)
     java_runtime_id: int | None = None
     build_version: str | None = Field(default=None, max_length=64)
+    jvm_args: str | None = Field(default=None, max_length=1024)
+
+    @field_validator("jvm_args")
+    @classmethod
+    def validate_jvm_arguments(cls, value: str | None) -> str | None:
+        return validate_jvm_args(value)
 
 
 class ServerUpdateRequest(StrictRequest):
@@ -97,6 +104,12 @@ class ServerUpdateRequest(StrictRequest):
     view_distance: int | None = Field(default=None, ge=2, le=32)
     motd: str | None = Field(default=None, min_length=1, max_length=128)
     java_runtime_id: int | None = None
+    jvm_args: str | None = Field(default=None, max_length=1024)
+
+    @field_validator("jvm_args")
+    @classmethod
+    def validate_jvm_arguments(cls, value: str | None) -> str | None:
+        return validate_jvm_args(value)
 
     @field_validator("difficulty")
     @classmethod
@@ -151,6 +164,9 @@ class ServerOut(BaseModel):
     version: str
     software_version: Optional[str] = None
     directory: str
+    # Directory relative to the configured servers root, for display. ``None``
+    # when the server lives outside the root (legacy/absolute paths).
+    relative_directory: Optional[str] = None
     port: int
     max_players: int
     online_mode: bool
@@ -163,6 +179,7 @@ class ServerOut(BaseModel):
     java_runtime_id: int | None
     install_status: str
     install_error: Optional[str] = None
+    jvm_args: Optional[str] = None
     created_at: UtcDateTime
     updated_at: UtcDateTime
     started_at: UtcDateTime | None

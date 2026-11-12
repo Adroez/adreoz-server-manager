@@ -1,22 +1,39 @@
 """Per-server operation coordination.
 
-Provides a shared locking mechanism to coordinate server lifecycle operations
-(start, stop, restart, delete) with backup/restore operations.
+Coordinates server lifecycle operations (start, stop, restart, delete) with
+backup/restore operations.
 
-This is a single-process, in-memory coordination suitable for a single Uvicorn
-worker. Multiple workers are NOT safely supported without external coordination
-(e.g., Redis, database advisory locks, or a file-based lock on shared storage).
+Two layers are used:
+
+* An in-process registry that enforces the operation compatibility matrix and
+  produces precise "server is busy with X" errors.
+* An OS-level advisory file lock (``fcntl.flock``) per server, so two panel
+  processes (for example ``uvicorn --workers 2``) cannot mutate the same
+  server concurrently. The kernel releases the lock automatically if a worker
+  dies, so there is no stale-lock cleanup problem.
+
+The lock directory is configured once at application startup via
+``configure_lock_directory``. If it is not configured, only the in-process
+layer is active (tests and library use).
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Iterator, Optional
+
+try:  # pragma: no cover - platform dependent
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
 
 from app.services.errors import ConflictError
 
@@ -87,6 +104,76 @@ class OperationState:
 # Protected by _lock_registry_guard (RLock for reentrancy).
 _lock_registry_guard = threading.RLock()
 _server_operations: dict[int, Optional[OperationState]] = {}
+
+# Nesting depth of operation locks held by *this* process, per server. Used so
+# an inner acquisition does not attempt a second flock() on the same server.
+_file_lock_depth: dict[int, int] = {}
+
+# Directory holding per-server advisory lock files, shared by every worker of
+# the panel. ``None`` disables cross-process locking (in-process only).
+_lock_directory: Optional[Path] = None
+
+
+def configure_lock_directory(directory: Path | str | None) -> None:
+    """Point cross-process locking at a directory shared by all workers.
+
+    Called once during application startup with a path inside the panel data
+    directory. Passing ``None`` disables the cross-process layer, which is
+    useful for tests.
+    """
+
+    global _lock_directory
+    if directory is None:
+        _lock_directory = None
+        return
+    resolved = Path(directory)
+    resolved.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _lock_directory = resolved
+
+
+def _acquire_file_lock(server_id: int) -> int | None:
+    """Take a non-blocking exclusive lock for ``server_id``.
+
+    Returns an open file descriptor that must be passed to
+    :func:`_release_file_lock`, or ``None`` when cross-process locking is
+    disabled or unavailable on this platform.
+    """
+
+    if _lock_directory is None or fcntl is None:
+        return None
+
+    lock_path = _lock_directory / f"server-{server_id}.lock"
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        logger.exception("Failed to open operation lock file %s", lock_path)
+        return None
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise ConflictError(
+            "Another panel worker is already operating on this server. "
+            "Please wait for it to finish."
+        ) from None
+
+    return fd
+
+
+def _release_file_lock(fd: int | None) -> None:
+    if fd is None:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:  # pragma: no cover - best effort
+        logger.exception("Failed to release operation lock")
+    finally:
+        try:
+            os.close(fd)
+        except OSError:  # pragma: no cover - best effort
+            pass
 
 
 def _get_current_operation(server_id: int) -> Optional[OperationState]:
@@ -188,9 +275,45 @@ def acquire_operation_lock(
         )
         _server_operations[server_id] = op_state
 
+    # Cross-process coordination. Nested acquisitions in the same process are
+    # tracked with a depth counter because flock() locks are per open file
+    # description, not per process.
+    file_lock_fd: int | None = None
+    with _lock_registry_guard:
+        depth = _file_lock_depth.get(server_id, 0)
+
+    if depth == 0:
+        try:
+            file_lock_fd = _acquire_file_lock(server_id)
+        except ConflictError:
+            if operation is OperationType.STOP:
+                # Stopping is deliberately allowed to preempt a stuck start or
+                # backup in another worker; log it and continue.
+                logger.warning(
+                    "Proceeding with stop for server %s although another "
+                    "worker holds its operation lock.",
+                    server_id,
+                )
+            else:
+                with _lock_registry_guard:
+                    current = _server_operations.get(server_id)
+                    if current is not None and current.owner == owner:
+                        _server_operations.pop(server_id, None)
+                raise
+
+    with _lock_registry_guard:
+        _file_lock_depth[server_id] = _file_lock_depth.get(server_id, 0) + 1
+
     try:
         yield
     finally:
+        with _lock_registry_guard:
+            remaining = _file_lock_depth.get(server_id, 1) - 1
+            if remaining <= 0:
+                _file_lock_depth.pop(server_id, None)
+            else:
+                _file_lock_depth[server_id] = remaining
+        _release_file_lock(file_lock_fd)
         # Clean up our operation state if we're still the owner.
         with _lock_registry_guard:
             current = _server_operations.get(server_id)

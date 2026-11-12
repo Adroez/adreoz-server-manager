@@ -12,8 +12,10 @@ import asyncio
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +26,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import Settings
 from app.core.java import JavaRuntimeManager
+from app.core.jvm_args import parse_jvm_args
 from app.core.process import ProcessManager, ProcessError
 from app.core.validation import ServerNameError, validate_server_name
 from app.models.server import Server, ServerLog
@@ -52,9 +55,11 @@ def _resolve_server_directory(
 ) -> Path:
     """Resolve and validate a server directory path.
 
-    The resolved directory must live inside the configured servers base
-    directory. Relative names are joined under the base directory. Absolute
-    paths are rejected unless they are already inside the base directory.
+    The resolved directory must live strictly inside the configured servers
+    base directory. Relative names are joined under the base directory.
+    Absolute paths are rejected unless they are already inside the base
+    directory. The base directory itself and paths that escape via symlinks
+    are rejected.
     """
 
     base_dir = settings.servers_dir.resolve()
@@ -65,18 +70,24 @@ def _resolve_server_directory(
             candidate = base_dir / candidate
         resolved = candidate.resolve()
     elif server_name:
-        # Default: <servers_dir>/<server_name>
-        resolved = base_dir / server_name
+        # Default: <servers_dir>/<server_name> - must resolve to detect symlinks.
+        resolved = (base_dir / server_name).resolve()
     else:
         raise DomainError("A server directory or name is required.")
 
-    # Prevent directory traversal: the resolved path must be inside base_dir.
+    # Prevent directory traversal: the resolved path must be strictly inside
+    # base_dir (not equal to it). This rejects ".", "..", and symlink escapes.
     try:
         resolved.relative_to(base_dir)
     except ValueError:
+        # Do not echo the absolute host path back to the client.
         raise DomainError(
-            f"Server directory must be inside {base_dir}."
+            "Server directory must be inside the configured servers directory."
         ) from None
+
+    # Reject the base directory itself (e.g., directory=".").
+    if resolved == base_dir:
+        raise DomainError("Server directory cannot be the servers base directory.")
 
     return resolved
 
@@ -117,7 +128,32 @@ def _validate_create_request(
     # Directory.
     directory = _resolve_server_directory(settings, payload.directory, payload.name)
     if directory.exists() and not directory.is_dir():
-        raise DomainError(f"Server path '{directory}' exists but is not a directory.")
+        raise DomainError(
+            "The requested server path exists but is not a directory."
+        )
+
+    # Prevent overlapping/duplicate server directories.
+    # Check against all existing server directories (resolved).
+    for existing_server in db.scalars(select(Server)).all():
+        existing_dir = Path(existing_server.directory).resolve()
+        try:
+            # Reject if the new directory is inside an existing one,
+            # or an existing one is inside the new directory, or they are equal.
+            directory.relative_to(existing_dir)
+            raise ConflictError(
+                "The requested server directory overlaps the directory of "
+                f"existing server '{existing_server.name}'."
+            )
+        except ValueError:
+            pass
+        try:
+            existing_dir.relative_to(directory)
+            raise ConflictError(
+                f"The directory of existing server '{existing_server.name}' "
+                "overlaps the requested server directory."
+            )
+        except ValueError:
+            pass
 
     # Port uniqueness across all servers.
     existing_port = db.scalar(select(Server).where(Server.port == payload.port))
@@ -177,6 +213,7 @@ def create_server(
         java_runtime_id=java_runtime_id,
         software_version=payload.software_version if hasattr(payload, 'software_version') else None,
         install_status="pending",
+        jvm_args=payload.jvm_args or None,
     )
     db.add(server)
     try:
@@ -352,6 +389,15 @@ def update_server(
             server.java_runtime_id = new_runtime_id
             changes.append(f"java_runtime_id={new_runtime_id}")
 
+    if "jvm_args" in data:
+        # ``None`` or an empty string clears the override.
+        new_jvm_args = data["jvm_args"] or None
+        if new_jvm_args != server.jvm_args:
+            server.jvm_args = new_jvm_args
+            changes.append(
+                f"jvm_args={new_jvm_args if new_jvm_args is not None else '(cleared)'}"
+            )
+
     if not changes:
         return server
 
@@ -508,7 +554,12 @@ async def _monitor_process(
 
     handle = process_manager.get(server_id)
     if handle is not None and handle.process is not process:
+        # A newer process replaced this one (restart); ignore the stale exit.
         return
+
+    # Capture the intent before mutating the handle: ``terminated`` below is
+    # set unconditionally and therefore cannot tell us why the process exited.
+    stop_requested = handle is not None and handle.stop_requested
 
     if handle is not None:
         handle.exit_code = returncode
@@ -520,7 +571,13 @@ async def _monitor_process(
             server = db.get(Server, server_id)
             if server is None:
                 return
-            server.status = "stopped" if returncode == 0 else "error"
+            # A graceful shutdown (panel stop, SIGTERM) must be recorded as
+            # "stopped". A non-zero exit the panel did not ask for is a crash.
+            is_sigterm = returncode == -signal.SIGTERM
+            if returncode == 0 or stop_requested or is_sigterm:
+                server.status = "stopped"
+            else:
+                server.status = "error"
             server.process_id = None
             server.stopped_at = datetime.now(timezone.utc).replace(tzinfo=None)
             db.commit()
@@ -553,12 +610,126 @@ def _jar_filename_for_server(server: Server) -> str:
 
 def _forge_server_jar(directory: Path, version: str, build: str | None) -> Path | None:
     """Return the path to the generated Forge server JAR, if the installer
-    has already been run. Otherwise return None."""
+    has already been run. Otherwise return None.
+
+    Modern Forge installers (1.13+) generate a shim JAR + libraries/ directory.
+    We look for common patterns: universal jar, shim jar, or the run.sh script.
+    """
     if build is None:
         return None
+
+    # Pattern 1: universal jar (legacy)
+    candidate = directory / f"forge-{version}-{build}-universal.jar"
+    if candidate.is_file():
+        return candidate
+
+    # Pattern 2: shim jar (modern)
     candidate = directory / f"forge-{version}-{build}.jar"
     if candidate.is_file():
         return candidate
+
+    # Pattern 3: forge-{version}-{build}-server.jar (some versions)
+    candidate = directory / f"forge-{version}-{build}-server.jar"
+    if candidate.is_file():
+        return candidate
+
+    return None
+
+
+def _merge_jvm_defaults(extra: list[str]) -> list[str]:
+    """Return the default heap flags that the caller has not overridden."""
+
+    lowered = [token.lower() for token in extra]
+    defaults: list[str] = []
+    if not any(token.startswith("-xms") for token in lowered):
+        defaults.append("-Xms512M")
+    if not any(token.startswith("-xmx") for token in lowered):
+        defaults.append("-Xmx1G")
+    return defaults
+
+
+def _write_forge_user_jvm_args(directory: Path, jvm_args: list[str]) -> None:
+    """Write managed JVM arguments to Forge's ``user_jvm_args.txt``."""
+
+    path = directory / "user_jvm_args.txt"
+    content = "# Managed by Adreoz Server Manager (per-server JVM arguments).\n"
+    content += "\n".join(jvm_args) + "\n"
+    try:
+        path.write_text(content, encoding="utf-8")
+        path.chmod(0o600)
+    except OSError:
+        logger.exception("Failed to write Forge user_jvm_args.txt in %s", directory)
+
+
+def _forge_launch_command(
+    directory: Path,
+    version: str,
+    build: str | None,
+    java_executable: str,
+    jvm_args: list[str] | None = None,
+) -> tuple[list[str], dict[str, str]] | None:
+    """Build the launch command and environment for a Forge server.
+
+    Returns a tuple of (command_list, env_dict), or None if the server is
+    not properly installed. Supports both legacy (universal jar) and modern
+    (run.sh + argument files) Forge installations.
+    """
+    if build is None:
+        return None
+
+    extra = list(jvm_args or [])
+
+    # ``run.sh`` invokes a bare ``java``. When a managed runtime was selected,
+    # make it the first entry on PATH (and expose JAVA_HOME) so the script
+    # launches the right JVM.
+    script_env: dict[str, str] = {}
+    java_path = Path(java_executable)
+    if java_path.is_absolute():
+        script_env["JAVA_HOME"] = str(java_path.parent.parent)
+        script_env["PATH"] = f"{java_path.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+
+    # Check for run.sh script (modern Forge 1.17+)
+    run_sh = directory / "run.sh"
+    if run_sh.is_file():
+        # Modern Forge reads JVM options from user_jvm_args.txt.
+        if extra:
+            _write_forge_user_jvm_args(directory, extra)
+        return (["bash", str(run_sh), "nogui"], script_env)
+
+    # Check for run.bat on Windows (not applicable here but for completeness)
+    run_bat = directory / "run.bat"
+    if run_bat.is_file():
+        if extra:
+            _write_forge_user_jvm_args(directory, extra)
+        return (["cmd", "/c", str(run_bat), "nogui"], script_env)
+
+    # Fallback: look for a server JAR (legacy or modern shim)
+    server_jar = _forge_server_jar(directory, version, build)
+    if server_jar is not None and server_jar.is_file():
+        return (
+            [
+                java_executable,
+                *_merge_jvm_defaults(extra),
+                *extra,
+                "-jar",
+                str(server_jar),
+                "nogui",
+            ],
+            script_env,
+        )
+
+    # Check for argument files (modern Forge without run.sh)
+    # Some versions create @user_jvm_args.txt and @forge-*.txt
+    libraries_dir = directory / "libraries"
+    if libraries_dir.is_dir():
+        # Try to find the main class and build classpath from libraries
+        # This is complex; for now, fall back to run.sh expectation.
+        logger.warning(
+            "Forge installation at %s has libraries/ but no run.sh. "
+            "Run the installer with --installServer to generate run.sh.",
+            directory,
+        )
+
     return None
 
 
@@ -643,22 +814,32 @@ async def _launch_process(
     jar_filename = _jar_filename_for_server(server)
     jar_path = directory / jar_filename
 
+    extra_env: dict[str, str] = {}
+
+    # Per-server JVM arguments (validated when they were saved).
+    jvm_extra = list(parse_jvm_args(server.jvm_args).tokens)
+
     # Forge requires running the installer before first launch. The installer
     # JAR was downloaded during software installation; running it generates
-    # forge-{version}-{forge}.jar and the libraries/ directory.
+    # the server JAR, libraries/, and run.sh (modern Forge) or universal jar.
     if server.software_type == "forge":
         build = server.software_version
-        server_jar = _forge_server_jar(directory, server.version, build)
-        if server_jar is None:
+        # Try to get a launch command (supports run.sh, universal jar, shim jar).
+        forge_result = _forge_launch_command(
+            directory, server.version, build, java_executable, jvm_extra
+        )
+        if forge_result is None:
             # Installer has not been run yet; run it now.
             await _run_forge_installer(directory, java_executable, jar_filename)
-            server_jar = _forge_server_jar(directory, server.version, build)
-            if server_jar is None:
+            forge_result = _forge_launch_command(
+                directory, server.version, build, java_executable, jvm_extra
+            )
+            if forge_result is None:
                 raise DomainError(
-                    "Forge installer did not generate a server JAR. "
-                    "Installation may be incomplete."
+                    "Forge installer did not generate a launchable server. "
+                    "Expected run.sh or a server JAR."
                 )
-        jar_path = server_jar
+        cmd, extra_env = forge_result
 
     # Fabric requires both the Fabric Loader JAR and the vanilla server JAR.
     # The launch uses a classpath with both JARs and the Fabric main class.
@@ -668,19 +849,19 @@ async def _launch_process(
         server_jar = directory / "server.jar"
         if not loader_jar.is_file():
             raise DomainError(
-                f"Fabric Loader JAR '{loader_jar.name}' not found in {directory}. "
+                f"Fabric Loader JAR '{loader_jar.name}' is not installed. "
                 "Install software before starting."
             )
         if not server_jar.is_file():
             raise DomainError(
-                f"Vanilla server JAR 'server.jar' not found in {directory}. "
+                "Vanilla server JAR 'server.jar' is not installed. "
                 "Install software before starting."
             )
         classpath = f"{loader_jar}:{server_jar}"
         cmd = [
             java_executable,
-            "-Xms512M",
-            "-Xmx1G",
+            *_merge_jvm_defaults(jvm_extra),
+            *jvm_extra,
             "-cp",
             classpath,
             "net.fabricmc.loader.impl.launch.knot.KnotServer",
@@ -689,17 +870,21 @@ async def _launch_process(
     else:
         if not jar_path.is_file():
             raise DomainError(
-                f"Server JAR '{jar_path.name}' not found in {directory}. "
+                f"Server JAR '{jar_path.name}' is not installed. "
                 "Install software before starting."
             )
         cmd = [
             java_executable,
-            "-Xms512M",
-            "-Xmx1G",
+            *_merge_jvm_defaults(jvm_extra),
+            *jvm_extra,
             "-jar",
             str(jar_path),
             "nogui",
         ]
+
+    # Merge extra environment variables (e.g., JAVA_HOME for Forge run.sh)
+    env = os.environ.copy()
+    env.update(extra_env)
 
     process = await asyncio.create_subprocess_exec(
         *cmd,
@@ -707,26 +892,27 @@ async def _launch_process(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
 
-    def output_callback(server_id: int, stream_name: str, text: str) -> None:
-        """Callback for process output: persist to DB and broadcast."""
-        # Persist to the database.
-        db = session_factory()
-        try:
-            capture_log(db, server_id, stream_name, text)
-        finally:
-            db.close()
-        # Broadcast to WebSocket console clients.
+    async def output_callback(server_id: int, stream_name: str, text: str) -> None:
+        """Broadcast a line to console clients, then persist it off-loop.
+
+        Database writes run in a worker thread so a slow disk can never stall
+        the event loop (and therefore every other request the panel serves).
+        """
+
         if console_manager is not None:
             try:
-                asyncio.create_task(
-                    console_manager.broadcast(server_id, stream_name, text)
-                )
+                await console_manager.broadcast(server_id, stream_name, text)
             except Exception:  # pragma: no cover - broadcast resilience
                 logger.exception(
-                    "Failed to schedule broadcast for server %s", server_id
+                    "Failed to broadcast console line for server %s", server_id
                 )
+
+        await asyncio.to_thread(
+            _persist_log, session_factory, server_id, stream_name, text
+        )
 
     process_manager.register(server.id, process, output_callback=output_callback)
     asyncio.create_task(
@@ -766,13 +952,15 @@ async def start_server(
 
         directory = Path(server.directory)
         if not directory.exists():
-            raise NotFoundError(f"Server directory '{directory}' does not exist.")
+            raise NotFoundError(
+                "The server directory does not exist on this host."
+            )
 
         jar_filename = _jar_filename_for_server(server)
         jar_path = directory / jar_filename
         if not jar_path.exists():
             raise DomainError(
-                f"Server software ({jar_filename}) is not installed in {directory}. "
+                f"Server software ({jar_filename}) is not installed. "
                 "Import or install software before starting."
             )
 
@@ -873,7 +1061,10 @@ async def stop_server(
             return server
 
         # Schedule the async stop; the process monitor records the final
-        # stopped/error state once the process exits.
+        # stopped/error state once the process exits. Mark the stop intent
+        # synchronously so an exit that wins the race is still classified as a
+        # graceful stop rather than a crash.
+        handle.stop_requested = True
         loop = asyncio.get_running_loop()
         loop.create_task(_stop_process(process_manager, server.id))
 
@@ -926,13 +1117,15 @@ async def restart_server(
 
         directory = Path(server.directory)
         if not directory.exists():
-            raise NotFoundError(f"Server directory '{directory}' does not exist.")
+            raise NotFoundError(
+                "The server directory does not exist on this host."
+            )
 
         jar_filename = _jar_filename_for_server(server)
         jar_path = directory / jar_filename
         if not jar_path.exists():
             raise DomainError(
-                f"Server software ({jar_filename}) is not installed in {directory}. "
+                f"Server software ({jar_filename}) is not installed. "
                 "Import or install software before starting."
             )
 
@@ -1000,41 +1193,108 @@ async def restart_server(
     return server
 
 
+# How often the log table is trimmed, in inserted lines. Trimming is a
+# comparatively expensive DELETE, so it is not done for every single line.
+_LOG_TRIM_INTERVAL = 100
+_log_insert_counts: dict[int, int] = {}
+_log_count_lock = threading.Lock()
+
+
+def _persist_log(session_factory, server_id: int, stream: str, line: str) -> None:
+    """Persist one captured line. Runs in a worker thread, never on the loop."""
+
+    db = session_factory()
+    try:
+        capture_log(db, server_id, stream, line)
+    finally:
+        db.close()
+
+
 def capture_log(
     db: Session,
     server_id: int,
     stream: str,
     line: str,
 ) -> None:
-    """Persist a log line for a server."""
+    """Persist a log line for a server and keep the table bounded."""
 
     try:
-        log_entry = ServerLog(server_id=server_id, stream=stream, line=line)
-        db.add(log_entry)
+        db.add(ServerLog(server_id=server_id, stream=stream, line=line))
         db.commit()
-        # Trim old logs.
-        db.execute(
-            delete(ServerLog).where(
-                ServerLog.server_id == server_id,
-                ServerLog.id.notin_(
-                    select(ServerLog.id)
-                    .where(ServerLog.server_id == server_id)
-                    .order_by(ServerLog.created_at.desc())
-                    .limit(MAX_LOG_LINES)
-                ),
+
+        with _log_count_lock:
+            count = _log_insert_counts.get(server_id, 0) + 1
+            should_trim = count >= _LOG_TRIM_INTERVAL
+            _log_insert_counts[server_id] = 0 if should_trim else count
+
+        if should_trim:
+            # Trim old logs (keep the newest MAX_LOG_LINES rows).
+            db.execute(
+                delete(ServerLog).where(
+                    ServerLog.server_id == server_id,
+                    ServerLog.id.notin_(
+                        select(ServerLog.id)
+                        .where(ServerLog.server_id == server_id)
+                        .order_by(ServerLog.created_at.desc(), ServerLog.id.desc())
+                        .limit(MAX_LOG_LINES)
+                    ),
+                )
             )
-        )
-        db.commit()
+            db.commit()
     except Exception:  # pragma: no cover - logging resilience
         db.rollback()
         logger.exception("Failed to capture log line for server %s", server_id)
+
+
+def _process_matches_server(pid: int | None, directory: Path) -> bool:
+    """Return True when ``pid`` is a live process launched for ``directory``.
+
+    PIDs are recycled by the kernel, so a recorded PID alone is not proof that
+    the server is still running. The process command line must reference the
+    server directory (the JAR path or working directory).
+    """
+
+    if pid is None or pid <= 0:
+        return False
+
+    import psutil
+
+    try:
+        proc = psutil.Process(pid)
+        if not proc.is_running() or proc.status() in (
+            psutil.STATUS_ZOMBIE,
+            psutil.STATUS_DEAD,
+        ):
+            return False
+        try:
+            cmdline = proc.cmdline()
+        except (psutil.AccessDenied, psutil.ZombieProcess):
+            return False
+        if not cmdline:
+            return False
+        try:
+            cwd_matches = Path(proc.cwd()).resolve() == directory.resolve()
+        except (psutil.Error, OSError):
+            cwd_matches = False
+        if cwd_matches:
+            return True
+        joined = " ".join(cmdline)
+        return str(directory) in joined
+    except (psutil.Error, OSError):
+        return False
 
 
 def reconcile_processes(
     db: Session,
     process_manager: ProcessManager,
 ) -> list[int]:
-    """Reconcile in-memory process state with actual subprocess state.
+    """Reconcile recorded server state with the real process table.
+
+    Runs at panel startup. A server is only considered running when its
+    persisted PID refers to a live process that was actually launched for that
+    server's directory. Servers whose process vanished are marked ``error``
+    (or ``stopped`` when they were already stopping), so the UI never offers
+    Stop/Console for a process that no longer exists.
 
     Returns a list of server IDs whose status changed.
     """
@@ -1042,31 +1302,38 @@ def reconcile_processes(
     changed: list[int] = []
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
+    running_servers = (
+        db.query(Server)
+        .filter(Server.status.in_(("running", "starting", "stopping")))
+        .all()
+    )
+
+    for server in running_servers:
+        directory = Path(server.directory)
+        if _process_matches_server(server.process_id, directory):
+            continue
+
+        previous = server.status
+        previous_pid = server.process_id
+        server.status = "stopped" if previous == "stopping" else "error"
+        server.process_id = None
+        server.stopped_at = now
+        db.commit()
+        changed.append(server.id)
+        logger.warning(
+            "Server %s (%s) was '%s' with pid %s but no matching process; "
+            "marked '%s'",
+            server.id,
+            server.name,
+            previous,
+            previous_pid,
+            server.status,
+        )
+
+    # Drop stale in-memory handles for servers that are no longer running.
     for server_id in list(process_manager.running_ids()):
         handle = process_manager.get(server_id)
-        if handle is None:
-            continue
-        process = handle.process
-        if process.returncode is not None:
-            # Process has terminated.
-            handle.exit_code = process.returncode
-            handle.terminated = True
-
-            server = db.get(Server, server_id)
-            if server is not None:
-                if process.returncode == 0:
-                    server.status = "stopped"
-                else:
-                    server.status = "error"
-                server.stopped_at = now
-                db.commit()
-                changed.append(server_id)
-
-            # Drain tasks.
-            for task in (handle.stdout_task, handle.stderr_task):
-                if task is not None and not task.done():
-                    task.cancel()
-
+        if handle is not None and handle.process.returncode is not None:
             process_manager.unregister(server_id)
 
     return changed

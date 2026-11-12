@@ -261,15 +261,52 @@ class JavaRuntimeService:
         db.commit()
 
         # Remove the directory from disk after DB commit.
-        if executable_path.exists() and executable_path.is_dir():
+        runtime_dir = executable_path.parent.parent
+        if runtime_dir.exists() and runtime_dir.is_dir():
             try:
-                shutil.rmtree(executable_path.parent)
+                shutil.rmtree(runtime_dir)
             except OSError:
-                logger.exception("Failed to remove runtime directory %s", executable_path.parent)
+                logger.exception("Failed to remove runtime directory %s", runtime_dir)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def cleanup_orphan_artifacts(self, max_age_seconds: int = 3600) -> int:
+        """Remove leftovers from interrupted Java runtime installations.
+
+        Interrupted downloads and extractions leave ``.asm-java-download-*``
+        files and ``.<runtime>.extract-*`` directories in the data directory.
+        They are never valid runtimes, so they are safe to delete once they are
+        older than ``max_age_seconds`` (to avoid racing an install in progress).
+        """
+
+        data_dir = Path(self.settings.data_dir)
+        if not data_dir.is_dir():
+            return 0
+
+        removed = 0
+        cutoff = time.time() - max_age_seconds
+
+        for entry in data_dir.iterdir():
+            name = entry.name
+            is_download = name.startswith(".asm-java-download-")
+            is_extract = name.startswith(".") and ".extract-" in name
+            if not (is_download or is_extract):
+                continue
+            try:
+                if entry.stat().st_mtime > cutoff:
+                    continue
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink()
+                removed += 1
+                logger.info("Removed orphan Java runtime artifact %s", entry)
+            except OSError:
+                logger.exception("Failed to remove orphan artifact %s", entry)
+
+        return removed
 
     def _download_file(self, url: str, destination: Path) -> None:
         """Download a file to ``destination`` with size limits and progress."""
@@ -297,10 +334,20 @@ class JavaRuntimeService:
                         chunk = response.read(1024 * 1024)
                         if not chunk:
                             break
-                        out_file.write(chunk)
                         downloaded += len(chunk)
-                        if total_size is not None and downloaded > MAX_RUNTIME_DOWNLOAD_BYTES:
+                        # Applies to chunked responses as well as ones that
+                        # declare Content-Length.
+                        if downloaded > MAX_RUNTIME_DOWNLOAD_BYTES:
                             raise DomainError("Download exceeded maximum size.")
+                        out_file.write(chunk)
+        except DomainError:
+            # Remove a partial download so an interrupted install cannot be
+            # mistaken for a complete archive.
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError:  # pragma: no cover - best effort
+                logger.exception("Failed to remove partial download %s", destination)
+            raise
         except HTTPError as exc:
             logger.error("Java download failed: HTTP %s", exc.code)
             raise DomainError(f"Failed to download Java runtime (HTTP {exc.code}).") from exc
@@ -318,21 +365,36 @@ class JavaRuntimeService:
 
     @staticmethod
     def _safe_extract_tar_gz(archive: Path, dest: Path) -> None:
-        """Safely extract a tar.gz, preventing path traversal."""
+        """Safely extract a tar.gz, preventing path traversal.
+
+        Validates all members before extraction. Rejects symlinks, hard links,
+        devices, FIFOs, and any entry that would escape the destination directory.
+        Uses tarfile's filter="data" on Python 3.12+ for defense in depth.
+        """
 
         with tarfile.open(archive, "r:gz") as tar:
-            for member in tar.getmembers():
+            members = tar.getmembers()
+            for member in members:
+                # Reject unsafe member types: symlinks, hard links, devices, FIFOs.
+                if member.isdir() or member.isfile():
+                    pass
+                else:
+                    raise DomainError("Unsafe archive entry type detected during extraction.")
                 member_path = Path(member.name)
-                # Reject absolute paths and traversal.
                 if member_path.is_absolute() or ".." in member_path.parts:
                     raise DomainError("Unsafe archive entry detected during extraction.")
-                # Resolve and confirm inside dest.
                 target = (dest / member_path).resolve()
                 try:
                     target.relative_to(dest.resolve())
                 except ValueError:
                     raise DomainError("Unsafe archive entry detected during extraction.")
-            tar.extractall(dest)
+            # Use filter="data" on Python 3.12+ for defense in depth.
+            extract_kwargs = {"path": dest, "members": members}
+            try:
+                extract_kwargs["filter"] = "data"
+            except TypeError:
+                pass  # Older Python: filter not supported.
+            tar.extractall(**extract_kwargs)
 
     @staticmethod
     def _find_java_home(extract_root: Path) -> Optional[Path]:
@@ -345,10 +407,23 @@ class JavaRuntimeService:
         return None
 
     def _find_managed_runtime(self, db, path: Path):
+        """Find a managed runtime by its installation directory.
+
+        The `path` parameter is the runtime directory (e.g., /data/runtimes/temurin-17...),
+        but the DB stores the executable path (e.g., /data/runtimes/temurin-17.../bin/java).
+        Both forms are matched exactly (no prefix matching, which could match a
+        different runtime whose name merely starts with the same characters).
+        """
         from app.models.java_runtime import JavaRuntime as JavaRuntimeModel
+
+        resolved = path.resolve()
+        candidates = {
+            str(resolved),
+            str(resolved / "bin" / "java"),
+        }
         return (
             db.query(JavaRuntimeModel)
-            .filter(JavaRuntimeModel.executable_path == str(path))
+            .filter(JavaRuntimeModel.executable_path.in_(candidates))
             .first()
         )
 

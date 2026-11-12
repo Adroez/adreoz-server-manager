@@ -71,8 +71,10 @@ export function buildCreateServerBody({
   motd,
   javaRuntimeId,
   buildVersion,
+  jvmArgs,
 }) {
-  return {
+  const trimmedJvmArgs = String(jvmArgs ?? "").trim();
+  const body = {
     name: name.trim(),
     software_type: softwareType,
     version: version.trim() || "1.20.1",
@@ -86,6 +88,12 @@ export function buildCreateServerBody({
     java_runtime_id: javaRuntimeId === "" || javaRuntimeId == null ? null : Number(javaRuntimeId),
     build_version: buildVersion || null,
   };
+  // Only send JVM arguments when the user supplied some, so the request body
+  // stays identical to previous versions for the default case.
+  if (trimmedJvmArgs !== "") {
+    body.jvm_args = trimmedJvmArgs;
+  }
+  return body;
 }
 
 export async function renderCreateServer(view, ctx) {
@@ -187,6 +195,14 @@ export async function renderCreateServer(view, ctx) {
       )
     )
   );
+  const jvmArgs = makeField({
+    id: "create-server-jvm-args",
+    label: "JVM arguments (optional)",
+    placeholder: "-Xmx2G -XX:+UseG1GC",
+    hint: "Extra JVM flags. Leave empty for the defaults (-Xms512M -Xmx1G).",
+    required: false,
+    extraAttrs: { autocapitalize: "none", spellcheck: "false" },
+  });
   const port = makeField({
     id: "create-server-port",
     label: "Port",
@@ -296,6 +312,7 @@ export async function renderCreateServer(view, ctx) {
     versionField,
     buildField,
     javaRuntimeField,
+    jvmArgs.field,
     port.field,
     maxPlayers.field,
     difficultyField,
@@ -450,6 +467,7 @@ export async function renderCreateServer(view, ctx) {
           motd: motd.input.value,
           javaRuntimeId: javaRuntimeSelect.value,
           buildVersion,
+          jvmArgs: jvmArgs.input.value,
         }),
       });
       toast(`Created ${created.name}. Software installation started.`);

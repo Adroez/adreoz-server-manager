@@ -30,7 +30,9 @@ MAX_UPLOAD_SIZE = 100 * 1024 * 1024
 MAX_READ_SIZE = 16 * 1024 * 1024
 
 # Characters not allowed in file/folder names.
-INVALID_FILENAME_CHARS = set("<>:\"|?*")
+# Control characters (0x00-0x1F and 0x7F) are rejected to prevent
+# header injection in Content-Disposition and other contexts.
+INVALID_FILENAME_CHARS = set("<>:\"|?*") | set(chr(i) for i in range(0x20)) | {chr(0x7F)}
 
 
 class FileSecurityError(DomainError):
@@ -60,11 +62,12 @@ def _resolve_file_path(
 
     The resolved path must live inside the server's directory. Symlinks are
     followed by ``Path.resolve()``; if the target escapes the server
-    directory, the request is rejected. This prevents symlink-based directory
-    traversal attacks.
+    directory, the request is rejected. This prevents symlink-based
+    directory traversal attacks.
 
-    ``relative_path`` must not be absolute and must not contain null bytes.
+    ``relative_path`` must not be absolute or contain null bytes.
     An empty string refers to the server's root directory.
+    Path traversal via ``..`` is rejected.
     """
 
     if "\x00" in relative_path:
@@ -82,7 +85,11 @@ def _resolve_file_path(
     server_dir = Path(server.directory).resolve()
 
     # Join the relative path with the server directory and resolve.
-    candidate = (server_dir / relative_path).resolve()
+    # Empty string means the server root directory.
+    if relative_path:
+        candidate = (server_dir / relative_path).resolve()
+    else:
+        candidate = server_dir
 
     # Ensure the resolved path is inside the server directory.
     try:
@@ -291,6 +298,10 @@ def rename_file(
     old_target = _resolve_file_path(settings, server, old_path)
     new_target = _resolve_file_path(settings, server, new_path)
 
+    server_dir = Path(server.directory).resolve()
+    if old_target == server_dir or new_target == server_dir:
+        raise DomainError("Operations on the server root directory are not allowed.")
+
     if not old_target.exists():
         raise NotFoundError("Source file or folder not found.")
 
@@ -324,6 +335,10 @@ def delete_file(
     _check_server_access(server, actor)
 
     target = _resolve_file_path(settings, server, relative_path)
+
+    server_dir = Path(server.directory).resolve()
+    if target == server_dir:
+        raise DomainError("Cannot delete the server root directory.")
 
     if not target.exists():
         raise NotFoundError("File or folder not found.")

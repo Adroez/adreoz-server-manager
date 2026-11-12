@@ -41,13 +41,10 @@ from app.services.software_install import SoftwareInstallService
 router = APIRouter(prefix="/servers", tags=["software-install"])
 
 
-def _software_service(db: Session, settings: Settings) -> SoftwareInstallService:
-    """Build a SoftwareInstallService bound to the current request's session factory."""
-    import sqlalchemy.orm as orm
+def _software_service(request: Request, settings: Settings) -> SoftwareInstallService:
+    """Build a SoftwareInstallService bound to the application's session factory."""
 
-    engine = db.bind
-    factory = orm.sessionmaker(bind=engine, expire_on_commit=False)
-    return SoftwareInstallService(settings, factory)
+    return SoftwareInstallService(settings, request.app.state.session_factory)
 
 
 @router.post(
@@ -80,7 +77,7 @@ def install_software(
     if server.status != "stopped":
         raise DomainError("Software can only be installed on a stopped server.")
 
-    service = _software_service(db, settings)
+    service = _software_service(request, settings)
     meta = request_meta(request)
 
     result = service.install_software(
@@ -111,6 +108,7 @@ def install_software(
 )
 def get_install_status(
     server_id: int,
+    request: Request,
     auth: Annotated[AuthContext, Depends(get_current_auth)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -125,7 +123,7 @@ def get_install_status(
     if not is_owner and not is_admin:
         raise ForbiddenError("You do not have access to this server.")
 
-    service = _software_service(db, settings)
+    service = _software_service(request, settings)
     status_info = service.get_install_status(server)
     return SoftwareInstallStatus(
         server_id=server.id,
@@ -145,12 +143,13 @@ def get_install_status(
 )
 def list_software_versions(
     software_type: str,
+    request: Request,
     auth: Annotated[AuthContext, Depends(get_current_auth)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> SoftwareVersionListResponse:
     """List available Minecraft versions for a software type."""
-    service = _software_service(db, settings)
+    service = _software_service(request, settings)
 
     try:
         if software_type == "vanilla":
@@ -179,12 +178,13 @@ def list_software_versions(
 def list_software_builds(
     software_type: str,
     version: str,
+    request: Request,
     auth: Annotated[AuthContext, Depends(get_current_auth)],
     db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> SoftwareBuildListResponse:
     """List available builds for a software type and version."""
-    service = _software_service(db, settings)
+    service = _software_service(request, settings)
 
     try:
         if software_type == "paper":

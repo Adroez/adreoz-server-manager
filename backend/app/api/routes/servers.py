@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -68,10 +69,33 @@ def _check_server_ownership(server: Server, auth: AuthContext) -> None:
         raise ForbiddenError("You do not have access to this server.")
 
 
+def _server_out(server: Server, settings: Settings) -> ServerOut:
+    """Serialise a server, adding a host-relative directory for display.
+
+    ``relative_directory`` is relative to the configured servers directory, so
+    the UI can show a stable name instead of the absolute host path. The
+    absolute ``directory`` field is retained for backwards compatibility and
+    is only ever returned to the server's owner or an administrator.
+    """
+
+    out = ServerOut.model_validate(server)
+    try:
+        out.relative_directory = str(
+            Path(server.directory).resolve().relative_to(
+                settings.servers_dir.resolve()
+            )
+        )
+    except (ValueError, OSError):
+        out.relative_directory = None
+    return out
+
+
 @router.get("", response_model=ServerListResponse)
 def list_servers_endpoint(
+    request: Request,
     auth: Annotated[AuthContext, Depends(get_current_auth)],
     db: Annotated[Session, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
     search: str | None = Query(default=None, max_length=64),
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -84,7 +108,7 @@ def list_servers_endpoint(
         offset=offset,
     )
     return ServerListResponse(
-        items=[ServerOut.model_validate(s) for s in items],
+        items=[_server_out(s, settings) for s in items],
         total=total,
         limit=limit,
         offset=offset,
@@ -108,7 +132,7 @@ def create_server_endpoint(
         session_factory=request.app.state.session_factory,
         meta=meta,
     )
-    return ServerOut.model_validate(server)
+    return _server_out(server, settings)
 
 
 @router.get("/{server_id}", response_model=ServerOut)
@@ -116,10 +140,11 @@ def get_server_endpoint(
     server_id: int,
     auth: Annotated[AuthContext, Depends(get_current_auth)],
     db: Annotated[Session, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ServerOut:
     server = get_server_or_404(db, server_id)
     _check_server_ownership(server, auth)
-    return ServerOut.model_validate(server)
+    return _server_out(server, settings)
 
 
 @router.patch("/{server_id}", response_model=ServerOut)
@@ -129,6 +154,7 @@ def update_server_endpoint(
     request: Request,
     auth: Annotated[AuthContext, Depends(require_csrf)],
     db: Annotated[Session, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ServerOut:
     server = get_server_or_404(db, server_id)
     _check_server_ownership(server, auth)
@@ -141,7 +167,7 @@ def update_server_endpoint(
         payload=payload,
         meta=meta,
     )
-    return ServerOut.model_validate(updated)
+    return _server_out(updated, settings)
 
 
 @router.delete("/{server_id}", response_model=ServerActionResponse)

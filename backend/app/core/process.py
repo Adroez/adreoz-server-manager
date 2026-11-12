@@ -13,6 +13,8 @@ WebSocket broadcasting.
 from __future__ import annotations
 
 import asyncio
+import codecs
+import inspect
 import logging
 import os
 import signal
@@ -21,6 +23,13 @@ from pathlib import Path
 from typing import Callable, Optional
 
 logger = logging.getLogger("asm.process")
+
+# Longest single log line forwarded to callbacks. Longer lines are split into
+# several entries instead of raising (as StreamReader.readline would).
+MAX_LINE_CHARS = 8192
+
+# Bytes read from a pipe per iteration.
+READ_CHUNK_BYTES = 65536
 
 
 class ProcessError(RuntimeError):
@@ -39,6 +48,10 @@ class ProcessHandle:
     stopped_at: float | None = None
     exit_code: int | None = None
     terminated: bool = False
+    # Set *before* the panel asks the process to stop, so the exit monitor can
+    # tell an intentional shutdown apart from a crash. ``terminated`` is set
+    # after the process has actually exited and cannot be used for this.
+    stop_requested: bool = False
 
     @property
     def is_running(self) -> bool:
@@ -98,23 +111,73 @@ class ProcessManager:
         handle = ProcessHandle(server_id=server_id, process=process)
         self._processes[server_id] = handle
 
+        async def emit(stream_name: str, text: str) -> None:
+            """Forward one log line to the callback (sync or async)."""
+
+            if not text:
+                return
+            if not output_callback:
+                logger.debug("[server %s] %s", server_id, text)
+                return
+            try:
+                result = output_callback(server_id, stream_name, text)
+                if inspect.isawaitable(result):
+                    await result
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # pragma: no cover - callback resilience
+                logger.exception(
+                    "Process output callback failed for server %s", server_id
+                )
+
         async def pump(stream, stream_name: str) -> None:
+            """Read a pipe in chunks and split it into bounded lines.
+
+            ``StreamReader.readline`` raises when a line exceeds the reader's
+            64 KiB limit, which silently killed log capture for chatty or
+            malformed servers. Reading raw chunks and splitting manually keeps
+            capture alive for arbitrarily long output.
+            """
+
             assert stream is not None
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            buffer = ""
+
+            async def emit_line(line: str) -> None:
+                """Emit one logical line, split into bounded chunks.
+
+                A single newline-terminated line can be far longer than the
+                limit (for example a stack trace or a serialised blob), so the
+                chunking must apply after splitting on the newline as well.
+                """
+
+                if line.endswith("\r"):
+                    line = line[:-1]
+                for start in range(0, len(line), MAX_LINE_CHARS):
+                    await emit(stream_name, line[start : start + MAX_LINE_CHARS])
+
             while True:
-                line = await stream.readline()
-                if not line:
+                try:
+                    chunk = await stream.read(READ_CHUNK_BYTES)
+                except (asyncio.IncompleteReadError, ConnectionResetError):
                     break
-                text = line.decode("utf-8", errors="replace").rstrip("\n")
-                if text:
-                    if output_callback:
-                        try:
-                            output_callback(server_id, stream_name, text)
-                        except Exception:  # pragma: no cover - callback resilience
-                            logger.exception(
-                                "Process output callback failed for server %s", server_id
-                            )
-                    else:
-                        logger.debug("[server %s %s] %s", server_id, stream_name, text)
+                if not chunk:
+                    break
+                buffer += decoder.decode(chunk)
+                while True:
+                    newline = buffer.find("\n")
+                    if newline < 0:
+                        break
+                    line = buffer[:newline]
+                    buffer = buffer[newline + 1 :]
+                    await emit_line(line)
+                # Emit oversized partial lines rather than buffering forever.
+                while len(buffer) > MAX_LINE_CHARS:
+                    await emit(stream_name, buffer[:MAX_LINE_CHARS])
+                    buffer = buffer[MAX_LINE_CHARS:]
+            buffer += decoder.decode(b"", final=True)
+            if buffer:
+                await emit_line(buffer)
 
         handle.stdout_task = asyncio.create_task(pump(process.stdout, "stdout"))
         handle.stderr_task = asyncio.create_task(pump(process.stderr, "stderr"))
@@ -134,6 +197,10 @@ class ProcessManager:
             raise ProcessError(f"No tracked process for server {server_id}.")
 
         process = handle.process
+        # Record the intent before signalling so the exit monitor can classify
+        # this exit as a graceful stop rather than a crash.
+        handle.stop_requested = True
+
         if process.returncode is not None:
             handle.exit_code = process.returncode
             handle.stopped_at = asyncio.get_event_loop().time()

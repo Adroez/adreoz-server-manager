@@ -232,6 +232,44 @@ describe("server-create - API request body", () => {
     assert.equal(body.build_version, "123");
   });
 
+  it("includes trimmed JVM arguments when provided", () => {
+    const body = buildCreateServerBody({
+      name: "hello-world",
+      softwareType: "vanilla",
+      version: "1.20.1",
+      port: "25565",
+      maxPlayers: "10",
+      onlineMode: true,
+      difficulty: "normal",
+      gamemode: "survival",
+      viewDistance: "10",
+      motd: "A Minecraft server",
+      javaRuntimeId: null,
+      buildVersion: null,
+      jvmArgs: "  -Xmx2G  ",
+    });
+    assert.equal(body.jvm_args, "-Xmx2G");
+  });
+
+  it("omits JVM arguments when the field is blank", () => {
+    const body = buildCreateServerBody({
+      name: "hello-world",
+      softwareType: "vanilla",
+      version: "1.20.1",
+      port: "25565",
+      maxPlayers: "10",
+      onlineMode: true,
+      difficulty: "normal",
+      gamemode: "survival",
+      viewDistance: "10",
+      motd: "A Minecraft server",
+      javaRuntimeId: null,
+      buildVersion: null,
+      jvmArgs: "   ",
+    });
+    assert.equal("jvm_args" in body, false);
+  });
+
   it("trims whitespace from name and MOTD", () => {
     const body = buildCreateServerBody({
       name: "  hello-world  ",

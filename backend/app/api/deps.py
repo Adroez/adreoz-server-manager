@@ -34,6 +34,18 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
+def get_session_factory(request: Request):
+    """Return the application's single session factory.
+
+    Services that need their own sessions (background work, per-line log
+    writes) must use this instead of constructing an ad-hoc ``sessionmaker``,
+    so every session shares the same engine settings (autoflush disabled,
+    ``expire_on_commit=False``) and connection pool.
+    """
+
+    return request.app.state.session_factory
+
+
 @dataclass(frozen=True)
 class AuthContext:
     user: User

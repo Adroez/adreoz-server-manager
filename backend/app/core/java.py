@@ -175,29 +175,55 @@ class JavaRuntimeManager:
 
     @staticmethod
     def _parse_java_vendor(output: str) -> str:
-        import re
+        """Identify the JDK vendor from ``java -version`` output.
 
-        for line in output.splitlines():
-            line_lower = line.lower()
-            if "openjdk" in line_lower:
-                return "OpenJDK"
-            if "temurin" in line_lower or "eclipse" in line_lower:
-                return "Eclipse Temurin"
-            if "oracle" in line_lower:
-                return "Oracle"
+        Every vendor prints an ``openjdk version ...`` first line, so the
+        specific markers must be checked across the whole output before
+        falling back to generic OpenJDK.
+        """
+
+        lowered = output.lower()
+
+        # Order matters: more specific vendors first.
+        markers: tuple[tuple[str, str], ...] = (
+            ("temurin", "Eclipse Temurin"),
+            ("eclipse adoptium", "Eclipse Temurin"),
+            ("adoptopenjdk", "AdoptOpenJDK"),
+            ("graalvm", "GraalVM"),
+            ("zulu", "Azul Zulu"),
+            ("azul", "Azul Zulu"),
+            ("corretto", "Amazon Corretto"),
+            ("microsoft", "Microsoft OpenJDK"),
+            ("sapmachine", "SAP SapMachine"),
+            ("liberica", "BellSoft Liberica"),
+            ("bellsoft", "BellSoft Liberica"),
+            ("ibm", "IBM Semeru"),
+            ("semeru", "IBM Semeru"),
+            ("oracle", "Oracle"),
+        )
+        for marker, name in markers:
+            if marker in lowered:
+                return name
+
+        if "openjdk" in lowered:
+            return "OpenJDK"
         return "Unknown"
 
     @staticmethod
     def _major_version(version: str) -> int:
+        """Return the Java feature release (8, 11, 17, 21, ...)."""
+
         import re
 
-        match = re.match(r"(\d+)", version)
+        value = version.strip()
+        # Legacy scheme: 1.8.0_402 -> 8. Must be checked before the generic
+        # numeric match, which would otherwise report 1.
+        legacy = re.match(r"1\.(\d+)", value)
+        if legacy:
+            return int(legacy.group(1))
+        match = re.match(r"(\d+)", value)
         if match:
             return int(match.group(1))
-        # Legacy 1.8.0 -> treat as major 8.
-        match = re.match(r"1\.(\d+)", version)
-        if match:
-            return int(match.group(1)) + 10
         return 0
 
     # ------------------------------------------------------------------

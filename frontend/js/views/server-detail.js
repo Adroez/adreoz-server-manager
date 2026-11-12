@@ -284,7 +284,53 @@ export async function renderServerDetail(view, ctx) {
           infoRow("Gamemode", data.gamemode),
           infoRow("View distance", String(data.view_distance)),
           infoRow("MOTD", data.motd),
-          infoRow("Directory", data.directory),
+          infoRow(
+            "JVM arguments",
+            data.jvm_args ? data.jvm_args : "Default (-Xms512M -Xmx1G)"
+          ),
+          (() => {
+            if (data.status !== "stopped" && data.status !== "error") return null;
+            const input = el("input", {
+              class: "config-input",
+              type: "text",
+              id: `server-jvm-args-${data.id}`,
+              placeholder: "-Xmx2G -XX:+UseG1GC",
+              value: data.jvm_args || "",
+            });
+            const save = el(
+              "button",
+              {
+                class: "btn",
+                type: "button",
+                on: {
+                  click: () => saveJvmArgs(data.id, input.value),
+                },
+              },
+              document.createTextNode("Save")
+            );
+            return el(
+              "div",
+              { class: "field" },
+              el(
+                "label",
+                { attrs: { for: `server-jvm-args-${data.id}` } },
+                document.createTextNode("JVM arguments")
+              ),
+              el("div", { class: "field-row" }, input, save),
+              el(
+                "p",
+                { class: "field-hint" },
+                document.createTextNode(
+                  "Extra flags passed to the JVM, for example -Xmx2G -XX:+UseG1GC. " +
+                    "Leave empty for the defaults. Applied on the next start."
+                )
+              )
+            );
+          })(),
+          infoRow(
+            "Directory",
+            data.relative_directory || data.directory
+          ),
           infoRow("Created", formatDateTime(data.created_at)),
           data.started_at
             ? infoRow("Started", formatDateTime(data.started_at))
@@ -541,6 +587,21 @@ export async function renderServerDetail(view, ctx) {
       if (ctx.isCurrent()) render(updated, runtimes);
     } catch (error) {
       toast(error.message || "Failed to change Java runtime.", "error");
+    }
+  }
+
+  async function saveJvmArgs(serverIdValue, rawValue) {
+    const value = String(rawValue ?? "").trim();
+    try {
+      await api(`/servers/${serverIdValue}`, {
+        method: "PATCH",
+        body: { jvm_args: value === "" ? null : value },
+      });
+      toast(value === "" ? "JVM arguments reset to defaults." : "JVM arguments saved.");
+      const updated = await api(`/servers/${serverIdValue}`);
+      if (ctx.isCurrent()) render(updated, runtimes);
+    } catch (error) {
+      toast(error.message || "Failed to save JVM arguments.", "error");
     }
   }
 

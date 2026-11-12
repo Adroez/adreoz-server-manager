@@ -115,6 +115,9 @@ async def console_websocket(
 
         # Send recent log history to the newly connected client.
         history = await console_manager.connect(server_id, websocket)
+        if history is None:
+            await websocket.close(code=status.WS_1013_TRY_AGAIN_LATER)
+            return
         for stream, line in history:
             try:
                 if websocket.client_state.__class__.__name__ == "CONNECTED":

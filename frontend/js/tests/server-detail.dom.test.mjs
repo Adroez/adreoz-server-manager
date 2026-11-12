@@ -666,6 +666,67 @@ describe("server-detail DOM - navigation", () => {
 /* Shared actionButton component                                             */
 /* ------------------------------------------------------------------------- */
 
+describe("server-detail DOM - directory and JVM arguments", () => {
+  it("shows the servers-relative directory instead of the host path", async () => {
+    const server = makeServer({
+      directory: "/srv/adreoz/servers/help",
+      relative_directory: "help",
+    });
+    const { view } = await renderPage(server);
+    assert.equal(infoValue(view, "Directory"), "help");
+  });
+
+  it("falls back to the absolute directory when no relative form exists", async () => {
+    const server = makeServer({
+      directory: "/srv/custom/help",
+      relative_directory: null,
+    });
+    const { view } = await renderPage(server);
+    assert.equal(infoValue(view, "Directory"), "/srv/custom/help");
+  });
+
+  it("prefills the editor with the configured JVM arguments", async () => {
+    const server = makeServer({
+      status: "stopped",
+      install_status: "completed",
+      jvm_args: "-Xmx2G -XX:+UseG1GC",
+    });
+    const { view } = await renderPage(server);
+    const input = view.querySelector(`#server-jvm-args-${server.id}`);
+    assert.ok(input, "JVM arguments input should be rendered");
+    assert.equal(input.value, "-Xmx2G -XX:+UseG1GC");
+  });
+
+  it("PATCHes edited JVM arguments and refreshes the server", async () => {
+    const server = makeServer({
+      status: "stopped",
+      install_status: "completed",
+      jvm_args: null,
+    });
+    const updated = { ...server, jvm_args: "-Xmx3G" };
+    const { view, calls } = await renderPage(server, {
+      extra: {
+        [`PATCH /api/servers/${server.id}`]: jsonResponse(updated),
+      },
+    });
+
+    const input = view.querySelector(`#server-jvm-args-${server.id}`);
+    assert.ok(input, "JVM arguments input should be rendered");
+    input.value = "-Xmx3G";
+    const save = Array.from(view.querySelectorAll(".field-row button")).find(
+      (button) => button.textContent.trim() === "Save"
+    );
+    assert.ok(save, "Save button should be rendered");
+    save.click();
+    await flush();
+    await flush();
+
+    const patch = calls.find((call) => call.method === "PATCH");
+    assert.ok(patch, "a PATCH request should be sent");
+    assert.deepEqual(JSON.parse(patch.body), { jvm_args: "-Xmx3G" });
+  });
+});
+
 describe("actionButton DOM", () => {
   it("renders an enabled button when disabled is omitted", () => {
     const button = actionButton({

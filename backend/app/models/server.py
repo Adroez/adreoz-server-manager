@@ -56,6 +56,9 @@ class Server(Base):
         String(32), nullable=False, default="pending"
     )
     install_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Optional extra JVM arguments (heap size, GC tuning, system properties).
+    # Stored normalised (single-space separated) after validation.
+    jvm_args: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     owner = relationship("User")  # noqa: F821
     java_runtime = relationship("JavaRuntime")  # noqa: F821

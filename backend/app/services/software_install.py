@@ -67,7 +67,7 @@ class SoftwareInstallService:
         directory = Path(server.directory)
         if not directory.exists() or not directory.is_dir():
             raise NotFoundError(
-                f"Server directory '{directory}' does not exist."
+                "The server directory does not exist on this host."
             )
 
         # Determine the software JAR filename.
@@ -105,6 +105,12 @@ class SoftwareInstallService:
             # as the server JAR. The installer must be executed with
             # --installServer on first launch to generate server files.
             if info.forge_installer:
+                shutil.move(str(tmp_path), str(jar_path))
+                jar_path.chmod(0o600)
+                tmp_path = None  # already moved
+            elif software_type in ("vanilla", "paper"):
+                # Vanilla and Paper provide the server JAR directly (not an archive).
+                # Move the downloaded JAR directly into place.
                 shutil.move(str(tmp_path), str(jar_path))
                 jar_path.chmod(0o600)
                 tmp_path = None  # already moved
@@ -174,27 +180,6 @@ class SoftwareInstallService:
                 shutil.move(str(tmp_path), str(jar_path))
                 jar_path.chmod(0o600)
                 tmp_path = None  # already moved
-            else:
-                # Extract into the server directory atomically.
-                extract_target = directory / f".{jar_filename}.extract-{int(time.time())}"
-                extract_target.mkdir(parents=True, exist_ok=True, mode=0o700)
-                try:
-                    self.installer._safe_extract_archive(tmp_path, extract_target)
-
-                    # Find the JAR file inside the extracted archive.
-                    jar_candidate = self._find_jar_in_archive(extract_target, jar_filename)
-                    if jar_candidate is None:
-                        raise DomainError(
-                            f"Extracted archive does not contain a server JAR for {software_type}."
-                        )
-
-                    # Move into the final location.
-                    shutil.move(str(jar_candidate), str(jar_path))
-                    jar_path.chmod(0o600)
-
-                finally:
-                    if extract_target.exists():
-                        shutil.rmtree(extract_target, ignore_errors=True)
 
         finally:
             if tmp_path is not None and tmp_path.exists():
